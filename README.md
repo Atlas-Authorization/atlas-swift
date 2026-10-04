@@ -90,6 +90,24 @@ stored via the `TokenStore`; the long-lived **`__atlas_rt`** refresh token is
 captured from the `Set-Cookie` header and re-presented on authenticated calls —
 the app never handles it directly.
 
+## Native session (first-party OAuth, cookie-free)
+
+A **first-party** OAuth client can trade an OAuth access token it already holds
+for a real Atlas session and then carry it by hand as a bearer — no cookie jar
+needed. See `NativeSession.swift`:
+
+- `exchangeForSession(baseURL:clientId:accessToken:)` — RFC 8693 token-exchange
+  against `POST /oauth2/token`.
+- `refreshNativeSession(baseURL:publishableKey:sessionId:refreshToken:)` — rotate
+  without a cookie via `POST /v1/client/sessions/:id/tokens`.
+- `NativeSessionManager` — an `actor` that holds the session, hands out a fresh
+  bearer via `token()`/`authHeaders()` (lazy, single-flight refresh ~10s before
+  expiry), and persists each rotated refresh token to the `TokenStore`.
+
+Both helpers **fail soft** — they return `nil` on any error, the caller's cue to
+re-run OAuth. (Added in **0.2.0**; there is no version constant in source — the
+package is versioned by git tag.)
+
 ## Token storage
 
 `TokenStore` is a protocol, so persistence is yours to choose:
