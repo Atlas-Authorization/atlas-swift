@@ -232,6 +232,24 @@ public final class AtlasClient: @unchecked Sendable {
         refreshCookie: String?,
         authorization: String? = nil
     ) async throws -> (Data, HTTPURLResponse) {
+        // A string-dict body is just a JSON object; it flows through the single
+        // JSON request path so the auth header + content type are set in one place.
+        try await sendJSON(method, path, json: body, refreshCookie: refreshCookie, authorization: authorization)
+    }
+
+    /// The single place a request is built and sent, for an arbitrary JSON object
+    /// body. The flow drivers and the `/me` mutation surface need nested values,
+    /// arrays (`codes`, `additional_scopes`), and free-form metadata that a
+    /// `[String: String]` body cannot express — so every call funnels through here,
+    /// keeping the publishable-key header, cookie, bearer, and content type in one
+    /// place (the class of bug where one endpoint forgets the key).
+    func sendJSON(
+        _ method: String,
+        _ path: String,
+        json: [String: Any]?,
+        refreshCookie: String?,
+        authorization: String? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = method
         request.setValue(publishableKey, forHTTPHeaderField: "x-publishable-key")
@@ -241,9 +259,9 @@ public final class AtlasClient: @unchecked Sendable {
         if let authorization {
             request.setValue("Bearer \(authorization)", forHTTPHeaderField: "Authorization")
         }
-        if let body {
+        if let json {
             request.setValue("application/json", forHTTPHeaderField: "content-type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.httpBody = try JSONSerialization.data(withJSONObject: json)
         }
 
         let data: Data
@@ -257,6 +275,43 @@ public final class AtlasClient: @unchecked Sendable {
             throw AtlasError.transport("The server returned a non-HTTP response.")
         }
         return (data, http)
+    }
+
+    /// Send an authenticated `/v1/client/me/*` (or session) request, presenting the
+    /// stored session JWT + refresh token as a browser would. Throws
+    /// ``AtlasError/notSignedIn`` when there is no session, and maps a non-2xx to an
+    /// ``AtlasError``. The one place the account-management surface reaches the server.
+    @discardableResult
+    func authedSend(
+        _ method: String,
+        _ path: String,
+        json: [String: Any]? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
+        guard let stored = try tokenStore.load() else { throw AtlasError.notSignedIn }
+        let (data, response) = try await sendJSON(
+            method, path, json: json, refreshCookie: cookieHeader(stored)
+        )
+        try throwIfError(status: response.statusCode, data: data)
+        return (data, response)
+    }
+
+    /// Decode an authenticated call's 2xx body into `T`.
+    func authedDecode<T: Decodable>(
+        _ type: T.Type,
+        _ method: String,
+        _ path: String,
+        json: [String: Any]? = nil
+    ) async throws -> T {
+        let (data, _) = try await authedSend(method, path, json: json)
+        return try decode(T.self, from: data)
+    }
+
+    /// Persist a session minted directly from a `jwt` + `Set-Cookie` refresh token
+    /// (the passkey / id_token / flow-completion paths that answer with a session
+    /// rather than a ticket to exchange).
+    func persistDirectSession(jwt: String, sessionId: String?, response: HTTPURLResponse) throws {
+        let refresh = extractCookie(Cookie.refresh, from: response)
+        try tokenStore.save(AtlasSession(sessionId: sessionId ?? "", token: jwt, refreshToken: refresh))
     }
 
     func throwIfError(status: Int, data: Data) throws {
