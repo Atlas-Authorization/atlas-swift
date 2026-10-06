@@ -51,4 +51,23 @@ public enum JSONValue: Codable, Sendable, Equatable {
         if case let .string(value) = self { return value }
         return nil
     }
+
+    /// A Foundation object (`String`/`NSNumber`/`[String: Any]`/`[Any]`/`NSNull`)
+    /// suitable for `JSONSerialization`, so customer-defined metadata can be sent
+    /// on a PATCH body without a second serialization model.
+    public var foundationValue: Any {
+        switch self {
+        case let .string(value): return value
+        case let .number(value): return value
+        case let .bool(value): return value
+        case let .object(value): return value.mapValues { $0.foundationValue }
+        case let .array(value): return value.map { $0.foundationValue }
+        case .null: return NSNull()
+        }
+    }
+}
+
+extension Dictionary where Key == String, Value == JSONValue {
+    /// The metadata map as a `JSONSerialization`-ready `[String: Any]`.
+    var foundationObject: [String: Any] { mapValues { $0.foundationValue } }
 }

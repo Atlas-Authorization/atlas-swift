@@ -5,10 +5,14 @@ dependency-light Swift Package that speaks the Atlas Frontend API (FAPI) with
 `URLSession` + `async/await` + `Codable`. It mirrors the vanilla JS client
 (`@atlas/js`) endpoint-for-endpoint and shape-for-shape.
 
-> **Scope.** This is a solid, tested *foundation*: the client-facing auth core a
-> native app needs, now including native **passkeys** (register + sign in). It is
-> not yet a complete SDK — see [Scope](#scope) for what a full release still needs
-> (prebuilt UI, the multi-step MFA driver).
+> **Complete as of 0.4.0.** The full client-facing auth surface a native app
+> needs: the single-call sign-in plus a **multi-step flow driver** (password,
+> email/phone code, second factor, MFA enrollment, password reset, sign-up),
+> native **passkeys**, **Sign in with Apple / Google id_token** exchange,
+> **organizations**, **session (device) management**, the `/me` **mutation**
+> surface (emails, external accounts, password, profile + metadata), and prebuilt
+> **SwiftUI** components (`SignIn`, `UserButton`, `UserProfile`, and an observable
+> `AtlasAuthSession`). It mirrors `@atlas/js` endpoint-for-endpoint.
 
 ## Install
 
@@ -125,6 +129,17 @@ configuration.
 | `signOut()` | `POST /v1/client/sessions/:id/revoke` |
 | `registerPasskey(name:)` | `POST /v1/client/me/passkeys/begin` → `…/finish` |
 | `signInWithPasskey()` | `POST /v1/client/sign_ins/passkey/begin` → `…/finish` |
+| `signInFlow()` driver | `POST /v1/client/sign_ins` (+ `…/:id/prepare_first_factor`, `attempt_first_factor`, `prepare_second_factor`, `attempt_second_factor`, `prepare_mfa_enrollment`, `attempt_mfa_enrollment`) |
+| `signUpFlow()` driver | `POST /v1/client/sign_ups` (+ `…/:id/prepare_verification`, `attempt_verification`) |
+| `passwordResetFlow()` driver | `POST /v1/client/password_resets` (+ `…/:id/attempt_verification`, `attempt_second_factor`, `set_new_password`) |
+| `signInWithIdToken(provider:idToken:nonce:)` | `POST /v1/client/sign_ins/id_token` |
+| `mintNativeNonce(provider:)` | `POST /v1/client/sign_ins/id_token/nonce` |
+| `organizations()` / `createOrganization(name:slug:)` | `GET`/`POST /v1/client/me/organizations`, `POST /v1/client/organizations` |
+| `setActiveOrganization(_:)` | `POST /v1/client/sessions/:id/touch` |
+| `sessions()` / `revokeSession(id:)` / `revokeOtherSessions()` | `GET /v1/client/sessions`, `…/:id/revoke`, `…/revoke_all` |
+| `addEmailAddress` / `verifyEmailAddress` / `setPrimaryEmailAddress` / `removeEmailAddress` | `/v1/client/me/email_addresses…` |
+| `connectExternalAccount` / `disconnectExternalAccount` | `/v1/client/me/external_accounts…` |
+| `changePassword` / `setPassword` / `updateProfile` | `POST /v1/client/me/change_password`, `…/set_password`, `PATCH /v1/client/me` |
 
 Every request sends `x-publishable-key`. The short-lived session **JWT** is
 stored via the `TokenStore`; the long-lived **`__atlas_rt`** refresh token is
@@ -203,16 +218,150 @@ token-store round-trip; and the passkey `begin`-response decoding and
 credential → `finish` body mapping (the base64url codec and exact field names),
 which need no device.
 
-## Scope
+The 0.4.0 surface is covered the same way, all offline against the mock: the
+flow-driver state transitions (sign-in password/second-factor/email-code/MFA
+enrollment, sign-up, password reset) walk the exact endpoints and bodies and
+assert the completion is exchanged into a persisted session; the pure
+`signInStep(_:)` mapping is checked for every status (including an unknown one);
+the id_token request body and the Apple identity-token decode are pinned; and the
+organizations / sessions / `/me` methods assert the exact method, path, cookie
+presentation, and request/response mapping (including that `unsafe_metadata` is
+sent and `public_metadata` never is). The on-device SwiftUI rendering and the live
+Apple/Google system sheets are the only parts that need a simulator/device.
 
-A complete native SDK on top of this foundation would add:
+## Multi-step flow driver
 
-- **A multi-step flow driver** mirroring `@atlas/js`'s `nextStep` / `advance` —
-  email-code, second factor, MFA enrollment, password reset — instead of the
-  single password happy-path here.
-- **Prebuilt SwiftUI components** (`<SignIn>` / `<UserButton>` equivalents) and
-  an observable session object for reactive UI.
-- **Sign in with Apple / Google One-Tap** native token exchange
-  (`POST /v1/client/sign_ins/id_token`).
-- Organizations, session listing, and the `/me` mutation surface (email,
-  external accounts, metadata).
+The single-call `signIn(email:password:)` is the happy path. Anything else — a
+second factor, an emailed code, mid-sign-in MFA enrollment, a sign-up, a password
+reset — runs through a **flow driver**: an `actor` that holds the server attempt
+and exposes its next ``SignInStep`` so **your UI drives the next action and the
+server decides the flow** (§5). A `complete` status is turned into a real session
+automatically (the completion ticket is exchanged and the JWT + refresh cookie
+persisted), after which the step is `.done`.
+
+```swift
+let flow = atlas.signInFlow()
+
+switch try await flow.start(identifier: "ada@example.com") {
+case .collectFirstFactor(let strategies):
+    if strategies.contains("password") {
+        switch try await flow.attemptPassword("…") {
+        case .done:                 break          // session already persisted
+        case .collectSecondFactor:
+            try await flow.attemptSecondFactor(code: "123456")   // TOTP / SMS / backup code
+        case .enrollSecondFactor:
+            let e = try await flow.prepareMfaEnrollment()        // secret + otpauth:// URI (shown once)
+            try await flow.attemptMfaEnrollment(factorId: e.factorId, codes: ["123456"])
+        default: break
+        }
+    } else {
+        try await flow.prepareEmailCode()          // or preparePhoneCode(channel:)
+        try await flow.attemptEmailCode("000111")
+    }
+default: break
+}
+```
+
+The step mapping (`signInStep(_:)`) is a **pure, exhaustive** function: an unknown
+server status becomes an explicit `.unknown(status:)` a UI can render as "update
+required" rather than a blank login box. A failed step throws `AtlasError` and
+**leaves the attempt intact**, so a wrong password/code is a retry, not a restart.
+
+`signUpFlow()` drives `/v1/client/sign_ups` (start → email verification →
+complete); `passwordResetFlow()` drives the standalone §5.4 reset
+(`needs_email_verification` → `needs_second_factor` → `needs_new_password` →
+`done`). Both exchange the completion ticket and sign the user in.
+
+```swift
+let reset = atlas.passwordResetFlow()
+try await reset.start(email: "ada@example.com")
+try await reset.attemptVerification(code: "111222")
+try await reset.setNewPassword("new-password")   // .done → signed in
+```
+
+## Sign in with Apple / Google (id_token)
+
+Exchange a provider `id_token` for a session without the redirect flow
+(`POST /v1/client/sign_ins/id_token`). The Apple ceremony has a small
+`ASAuthorizationController` wrapper; the token exchange is provider-agnostic.
+
+```swift
+// Apple — mint a nonce, run the system sheet, exchange the identity token.
+let nonce = try await atlas.mintNativeNonce(provider: "apple")
+let apple = try await SignInWithApple().signIn(nonce: nonce)   // iOS 13+/macOS 10.15+
+switch try await atlas.signInWithIdToken(provider: "apple", idToken: apple.identityToken, nonce: nonce) {
+case .complete(let user):        print("signed in", user.id)   // session persisted
+case .needsNextStep(let flow):   try await flow.attemptSecondFactor(code: "123456")
+}
+
+// Google One-Tap / GSI — post the credential id_token your Google SDK produced.
+_ = try await atlas.signInWithIdToken(provider: "google", idToken: googleCredential, nonce: nonce)
+```
+
+A `complete` result returns the signed-in `AtlasUser`; a `needs_second_factor`
+result hands back a seeded `SignInFlow` so the 2FA step uses the same driver.
+
+## Organizations, sessions & the `/me` surface
+
+Typed methods over the authenticated client surface (all present the stored
+session the way a browser does):
+
+```swift
+// Organizations
+let memberships = try await atlas.organizations()            // GET /me/organizations
+try await atlas.setActiveOrganization(memberships.first?.organization.id)   // touch; rotated JWT persisted
+let org = try await atlas.createOrganization(name: "Acme", slug: "acme")    // when the instance allows it
+
+// Sessions / devices
+let devices = try await atlas.sessions()                     // GET /v1/client/sessions ("Chrome on macOS", …)
+try await atlas.revokeSession(id: someDevice.id)             // sign out one device
+let n = try await atlas.revokeOtherSessions()                // sign out every OTHER device
+
+// Email addresses
+let added = try await atlas.addEmailAddress("new@example.com")
+try await atlas.verifyEmailAddress(id: added.id, code: "123456")
+try await atlas.setPrimaryEmailAddress(id: added.id)
+try await atlas.removeEmailAddress(id: added.id)
+
+// External accounts — start an OAuth link, hand the URL to ASWebAuthenticationSession
+let link = try await atlas.connectExternalAccount(provider: "github", redirectURL: "myapp://cb")
+try await atlas.disconnectExternalAccount(id: "ext_1")
+
+// Password & profile
+try await atlas.changePassword(current: "old", new: "new")   // account with a password
+try await atlas.setPassword("first-password")                // guest / OAuth-only account
+let me = try await atlas.updateProfile(firstName: "Ada", unsafeMetadata: ["theme": .string("dark")])
+```
+
+`unsafe_metadata` is the only metadata a client may write — `public_metadata` is
+backend-only and never sent (§4.1).
+
+## SwiftUI components
+
+Prebuilt, themeable views (gated to iOS 15+/macOS 12+; the non-UI core still
+builds on lower targets via `#if canImport(SwiftUI)`). `AtlasAuthSession` is the
+observable the UI binds to — the signed-in user, a loading flag, the last error.
+(It is distinct from the persisted `AtlasSession` token value the `TokenStore`
+holds.)
+
+```swift
+@StateObject private var session = AtlasAuthSession(client: atlas)
+
+var body: some View {
+    Group {
+        if session.isSignedIn {
+            UserButton(session: session)       // avatar + name + sign-out menu
+            UserProfile(session: session)      // identity + email list + sign-out
+        } else {
+            SignIn(session: session)           // drives the flow: identifier → factors → 2FA → done
+        }
+    }
+    .task { await session.load() }
+}
+```
+
+`SignIn` wraps the flow driver end to end; `AtlasAuthSession` exposes
+`signIn(email:password:)`, `signOut()`, and `reload()` as `async` methods that
+keep `@Published` state in step. The on-device rendering and the live Apple/Google
+system sheets need a simulator/device to verify; the logic they drive is covered
+by the headless unit tests.
