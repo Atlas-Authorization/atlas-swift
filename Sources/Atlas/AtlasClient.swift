@@ -9,12 +9,13 @@ import Foundation
 /// HttpOnly `__atlas_rt` refresh cookie is captured and re-presented so the SDK
 /// can call `me` and rotate the token without the app ever handling it.
 ///
-/// The client is intentionally thin. It does not drive multi-step MFA UI, own a
-/// cookie jar, or bundle passkeys — see the README's scope note. What it does,
+/// The client is intentionally thin. It does not drive multi-step MFA UI or own
+/// a cookie jar — see the README's scope note. Native passkeys (register +
+/// sign in) live in `Passkeys.swift` as an extension on this type. What it does,
 /// it does to the letter of the server contract.
 public final class AtlasClient: @unchecked Sendable {
     /// Cookie names the server sets (mirrors the API's `COOKIE_NAMES`).
-    private enum Cookie {
+    enum Cookie {
         static let session = "__session"
         static let refresh = "__atlas_rt"
     }
@@ -220,17 +221,25 @@ public final class AtlasClient: @unchecked Sendable {
     /// The single place a request is built and sent. Every call flows through
     /// here so the auth header, base URL, and JSON content type are set in
     /// exactly one place — the class of bug where one endpoint forgets the key.
-    private func send(
+    ///
+    /// `authorization` carries a bearer token for the routes that authenticate
+    /// with the session JWT in a header rather than a cookie (the cookieless
+    /// passkey-register path); it is independent of `refreshCookie`.
+    func send(
         _ method: String,
         _ path: String,
         body: [String: String]?,
-        refreshCookie: String?
+        refreshCookie: String?,
+        authorization: String? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = method
         request.setValue(publishableKey, forHTTPHeaderField: "x-publishable-key")
         if let refreshCookie {
             request.setValue(refreshCookie, forHTTPHeaderField: "Cookie")
+        }
+        if let authorization {
+            request.setValue("Bearer \(authorization)", forHTTPHeaderField: "Authorization")
         }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -250,13 +259,13 @@ public final class AtlasClient: @unchecked Sendable {
         return (data, http)
     }
 
-    private func throwIfError(status: Int, data: Data) throws {
+    func throwIfError(status: Int, data: Data) throws {
         guard (200..<300).contains(status) else {
             throw parseErrorEnvelope(status: status, data: data)
         }
     }
 
-    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
             return try decoder.decode(type, from: data)
         } catch {
@@ -275,7 +284,7 @@ public final class AtlasClient: @unchecked Sendable {
     }
 
     /// Pull one cookie value out of a response's `Set-Cookie` header(s).
-    private func extractCookie(_ name: String, from response: HTTPURLResponse) -> String? {
+    func extractCookie(_ name: String, from response: HTTPURLResponse) -> String? {
         guard let url = response.url else { return nil }
         // `allHeaderFields` collapses repeated Set-Cookie into a comma-joined
         // string on Foundation; HTTPCookie.cookies handles that parsing.
