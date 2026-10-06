@@ -6,9 +6,9 @@ dependency-light Swift Package that speaks the Atlas Frontend API (FAPI) with
 (`@atlas/js`) endpoint-for-endpoint and shape-for-shape.
 
 > **Scope.** This is a solid, tested *foundation*: the client-facing auth core a
-> native app needs. It is not yet a complete SDK — see [Scope](#scope) for what a
-> full release still needs (native passkeys/WebAuthn, prebuilt UI, the multi-step
-> MFA driver).
+> native app needs, now including native **passkeys** (register + sign in). It is
+> not yet a complete SDK — see [Scope](#scope) for what a full release still needs
+> (prebuilt UI, the multi-step MFA driver).
 
 ## Install
 
@@ -74,6 +74,45 @@ session.presentationContextProvider = self
 session.start()
 ```
 
+### Passkeys (WebAuthn)
+
+Native passkeys run through `ASAuthorizationController`, wrapped in `async/await`.
+Two methods, one per ceremony; both take the relying-party id and challenge from
+the server's `begin` response (never hardcoded), so they always match the
+instance.
+
+```swift
+// Register a passkey for the signed-in user. Uses the session the SDK already
+// holds. `name` is an optional label shown in the user's device passkey list.
+let passkey = try await atlas.registerPasskey(name: "My iPhone")
+print(passkey.id)
+
+// Sign in with a passkey — no identifier needed, the credential names the user.
+// On success the session (JWT + refresh token) is persisted like any sign-in,
+// and the signed-in user is returned.
+let user = try await atlas.signInWithPasskey()
+```
+
+Both throw `AtlasError` for an API failure and the platform `ASAuthorizationError`
+if the system sheet fails or the user cancels. Available on **iOS 16+, macOS 12+,
+tvOS 16+** (gated with `@available`; the rest of the SDK still builds on older
+targets).
+
+#### Setup (Associated Domains)
+
+Passkeys are bound to a domain, so the app must claim the instance's Frontend API
+host. In Xcode, add the **Associated Domains** capability and an entry:
+
+```
+webcredentials:clerk.your-domain.com
+```
+
+(Use your instance's FAPI host — the same value you pass as `frontendApi`.) Atlas
+serves the matching `/.well-known/apple-app-site-association` on that host
+automatically, per instance — **you do not self-host it**. Once the entitlement
+and the served AASA agree, the system offers and verifies passkeys with no further
+configuration.
+
 ## Surface
 
 | Method | FAPI endpoint(s) |
@@ -84,6 +123,8 @@ session.start()
 | `currentUser()` | `GET /v1/client/me` |
 | `refresh()` | `POST /v1/client/sessions/:id/tokens` |
 | `signOut()` | `POST /v1/client/sessions/:id/revoke` |
+| `registerPasskey(name:)` | `POST /v1/client/me/passkeys/begin` → `…/finish` |
+| `signInWithPasskey()` | `POST /v1/client/sign_ins/passkey/begin` → `…/finish` |
 
 Every request sends `x-publishable-key`. The short-lived session **JWT** is
 stored via the `TokenStore`; the long-lived **`__atlas_rt`** refresh token is
@@ -152,20 +193,20 @@ do {
 swift test
 ```
 
-13 unit tests run entirely offline against a mocked `URLProtocol`
+The unit tests run entirely offline against a mocked `URLProtocol`
 (`MockURLProtocol`) — no network. They pin: the auth header + base URL on every
 request; that password sign-in walks the exact three endpoints with the exact
 bodies and stores the returned JWT + refresh cookie; that a 4xx/5xx becomes an
 `AtlasError` with the right `code`; that `currentUser()` decodes the full `/me`
-shape and presents the cookie; that `refresh()` rotates the stored token; and the
-token-store round-trip.
+shape and presents the cookie; that `refresh()` rotates the stored token; the
+token-store round-trip; and the passkey `begin`-response decoding and
+credential → `finish` body mapping (the base64url codec and exact field names),
+which need no device.
 
 ## Scope
 
 A complete native SDK on top of this foundation would add:
 
-- **Native passkeys / WebAuthn** via `ASAuthorizationController` (register +
-  authenticate, first- and second-factor).
 - **A multi-step flow driver** mirroring `@atlas/js`'s `nextStep` / `advance` —
   email-code, second factor, MFA enrollment, password reset — instead of the
   single password happy-path here.
