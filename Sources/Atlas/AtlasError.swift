@@ -38,6 +38,15 @@ public enum AtlasError: Error, Sendable {
         return nil
     }
 
+    /// The first server error code as a typed ``AtlasErrorCode`` when the SDK
+    /// knows it; nil for other codes and non-API failures (``code`` has them all).
+    public var knownCode: AtlasErrorCode? { code.flatMap(AtlasErrorCode.init(rawValue:)) }
+
+    /// The app cannot send email (422 `EMAIL_DELIVERY_NOT_CONFIGURED`); nothing was
+    /// sent. ``message`` is the server's end-user wording — show it as-is and offer
+    /// another sign-in method.
+    public var isEmailDeliveryNotConfigured: Bool { knownCode == .emailDeliveryNotConfigured }
+
     /// The HTTP status for an `.api` error; nil for local/transport failures.
     public var status: Int? {
         if case let .api(status, _) = self { return status }
@@ -57,6 +66,26 @@ public enum AtlasError: Error, Sendable {
             return "You must be signed in."
         }
     }
+}
+
+/// Server error codes the SDK names. The raw value is the wire code;
+/// ``AtlasError/code`` still carries every code, known or not.
+public enum AtlasErrorCode: String, Sendable, CaseIterable {
+    /// 422 — a flow would send an email (code, link, reset, verification) but the
+    /// app has no way to deliver it. Refused before anything is issued, so a form
+    /// never says "we sent you a code" when nothing will arrive.
+    case emailDeliveryNotConfigured = "EMAIL_DELIVERY_NOT_CONFIGURED"
+    case validationFailed = "VALIDATION_FAILED"
+    case rateLimited = "RATE_LIMITED"
+    case identifierNotFound = "IDENTIFIER_NOT_FOUND"
+    case identifierExists = "IDENTIFIER_EXISTS"
+    case verificationExpired = "VERIFICATION_EXPIRED"
+    case verificationFailed = "VERIFICATION_FAILED"
+    case emailNotVerified = "EMAIL_NOT_VERIFIED"
+    case tooManyAttempts = "TOO_MANY_ATTEMPTS"
+    case passwordBreached = "PASSWORD_BREACHED"
+    case passwordPolicy = "PASSWORD_POLICY"
+    case locked = "LOCKED"
 }
 
 extension AtlasError: LocalizedError {

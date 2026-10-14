@@ -2,6 +2,38 @@
 
 All notable changes to the Atlas Swift SDK. The package is versioned by git tag.
 
+## 0.5.0
+
+### Added
+
+- **Dashboard design in `SignIn`.** The view reads `GET /v1/appearance` (also
+  public as `client.appearance(organization:)`) and, when the app owner saved a
+  design, renders it natively: light/dark palettes (system or forced
+  `colorScheme`), card + control radii (999 = capsule), border width, card style
+  / shadow / width, density spacing, button style (solid / outline / soft /
+  gradient), input style (outline / filled / underline), social-button layout
+  (list / grid / icons), font size / weights / type scale / uppercase buttons,
+  and the light/dark logo. Catalog fonts are used when the app bundles them,
+  else the system font of the same design (default / serif / monospaced). With
+  `design: null` the view is unchanged from 0.4.x.
+- **`appearance` overrides.** `SignIn(session:appearance:)` takes an
+  `AtlasAppearance` that overrides any design token in code (code wins over the
+  dashboard; `applyDashboardDesign = false` ignores the dashboard).
+- **Social buttons.** `onSocialSignIn` shows the enabled providers in the
+  design's layout; `AtlasSocialButtons` is public for custom screens.
+- **Design model.** `AtlasDesign` (tolerant decoder of `design.resolved`:
+  unknown keys ignored, missing/invalid values default), `AtlasAppearanceInfo`,
+  and the token enums.
+- **Typed error codes.** `AtlasError.knownCode` → `AtlasErrorCode`;
+  `isEmailDeliveryNotConfigured` for the new 422
+  `EMAIL_DELIVERY_NOT_CONFIGURED`. `SignIn` shows the server's message and stops
+  offering "Email me a code" after that refusal.
+
+### Fixed
+
+- A request path carrying a query string is no longer percent-escaped into the
+  path.
+
 ## 0.4.0
 
 The SDK is now feature-complete — the full client-facing auth surface a native

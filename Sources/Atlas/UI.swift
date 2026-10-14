@@ -77,108 +77,222 @@ public final class AtlasAuthSession: ObservableObject {
 /// A drop-in sign-in screen that drives the ``SignInFlow`` end to end: identifier
 /// → first factor (password or email code) → second factor / MFA enrollment →
 /// done. On completion it refreshes the bound ``AtlasAuthSession`` and calls
-/// `onComplete`. Styling is intentionally plain — a starting point to theme.
+/// `onComplete`.
+///
+/// **Design.** On appear it reads the instance's appearance (`GET /v1/appearance`).
+/// When the app owner saved a design in the Atlas dashboard, the view renders it —
+/// colours (light/dark), fonts, radii, borders, shadow, density, button / input /
+/// social-button styles and the logo. Pass `appearance` to override any token in
+/// code (code wins over the dashboard). With no dashboard design and no
+/// `appearance`, the view keeps its plain system styling.
 @available(iOS 15.0, macOS 12.0, *)
 public struct SignIn: View {
     @StateObject private var model: SignInModel
+    @Environment(\.colorScheme) private var systemScheme
     private let onComplete: () -> Void
+    private let appearance: AtlasAppearance?
+    private let onSocialSignIn: ((String) -> Void)?
 
     /// - Parameters:
     ///   - session: the session to refresh when sign-in completes.
+    ///   - appearance: code-level design overrides (win over the dashboard design).
+    ///   - appearanceInfo: a pre-fetched ``AtlasAppearanceInfo``; when nil the view
+    ///     fetches it itself (a failed fetch just keeps the default look).
+    ///   - onSocialSignIn: when set, the enabled social providers are shown and the
+    ///     tapped provider id is passed here (start OAuth with
+    ///     ``AtlasClient/oauthAuthorizeURL(provider:redirectURI:)``).
     ///   - onComplete: called after the session is established.
-    public init(session: AtlasAuthSession, onComplete: @escaping () -> Void = {}) {
-        _model = StateObject(wrappedValue: SignInModel(session: session))
+    public init(
+        session: AtlasAuthSession,
+        appearance: AtlasAppearance? = nil,
+        appearanceInfo: AtlasAppearanceInfo? = nil,
+        onSocialSignIn: ((String) -> Void)? = nil,
+        onComplete: @escaping () -> Void = {}
+    ) {
+        _model = StateObject(wrappedValue: SignInModel(session: session, appearanceInfo: appearanceInfo))
+        self.appearance = appearance
+        self.onSocialSignIn = onSocialSignIn
         self.onComplete = onComplete
     }
 
+    /// The design in effect (nil = the plain, pre-design look).
+    private var style: AtlasStyle? {
+        AtlasDesign.resolve(dashboard: model.appearanceInfo?.design, appearance: appearance)
+            .map { AtlasStyle(design: $0, systemIsDark: systemScheme == .dark) }
+    }
+
     public var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Sign in").font(.title2).bold()
-
-            switch model.step {
-            case .collectIdentifier:
-                field("Email", text: $model.identifier)
-                continueButton("Continue") { await model.start() }
-
-            case let .collectFirstFactor(strategies):
-                if strategies.contains("password") {
-                    secureField("Password", text: $model.password)
-                    continueButton("Sign in") { await model.submitPassword() }
+        Group {
+            if let style {
+                VStack(alignment: .leading, spacing: style.design.spacing.gap) {
+                    if let logo = style.design.logo(systemIsDark: systemScheme == .dark) {
+                        AsyncImage(url: logo) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
+                            .frame(height: style.design.logoHeight)
+                            .frame(maxWidth: .infinity)
+                            .accessibilityHidden(true)
+                    }
+                    content(style)
                 }
-                if strategies.contains("email_code") {
-                    Button("Email me a code") { Task { await model.sendEmailCode() } }
-                }
+                .foregroundColor(style.palette.color(.text))
+                .modifier(AtlasCardModifier(style: style, systemIsDark: systemScheme == .dark))
+            } else {
+                VStack(alignment: .leading, spacing: 16) { content(nil) }
+                    .padding()
+            }
+        }
+        .onChange(of: model.completed) { done in if done { onComplete() } }
+        .task { await model.loadAppearance() }
+    }
 
-            case .collectEmailCode, .collectPhoneCode:
-                field("Verification code", text: $model.code)
-                continueButton("Verify") { await model.submitCode() }
+    @ViewBuilder private func content(_ style: AtlasStyle?) -> some View {
+        title("Sign in", style)
 
-            case .collectSecondFactor:
-                Text("Enter your two-factor code").font(.subheadline)
-                field("Authenticator / SMS / backup code", text: $model.code)
-                continueButton("Verify") { await model.submitSecondFactor() }
+        switch model.step {
+        case .collectIdentifier:
+            if let onSocialSignIn, let providers = model.appearanceInfo?.providers, !providers.isEmpty {
+                AtlasSocialButtons(providers: providers, design: style?.design ?? .defaults, onSelect: onSocialSignIn)
+            }
+            field("Email", text: $model.identifier, style)
+            continueButton("Continue", style) { await model.start() }
 
-            case .enrollSecondFactor:
-                enrollmentSection
-
-            case .collectNewPassword:
-                secureField("New password", text: $model.password)
-                continueButton("Set password") { await model.submitPassword() }
-
-            case .awaitOAuth, .collectCaptcha:
-                Text("Continue in your browser to finish signing in.").font(.subheadline)
-
-            case .done:
-                Text("You're signed in.").font(.subheadline)
-
-            case let .restart(reason):
-                Text("This sign-in was \(reason). Start again.").font(.subheadline)
-                Button("Start over") { model.reset() }
-
-            case let .unknown(status):
-                Text("This sign-in needs an app update (\(status)).").font(.subheadline)
+        case let .collectFirstFactor(strategies):
+            if strategies.contains("password") {
+                secureField("Password", text: $model.password, style)
+                continueButton("Sign in", style) { await model.submitPassword() }
+            }
+            // Hidden once the server said the app can't send email.
+            if strategies.contains("email_code") && !model.emailUnavailable {
+                secondaryButton("Email me a code", style) { await model.sendEmailCode() }
             }
 
-            if let message = model.errorMessage {
+        case .collectEmailCode, .collectPhoneCode:
+            field("Verification code", text: $model.code, style)
+            continueButton("Verify", style) { await model.submitCode() }
+
+        case .collectSecondFactor:
+            caption("Enter your two-factor code", style)
+            field("Authenticator / SMS / backup code", text: $model.code, style)
+            continueButton("Verify", style) { await model.submitSecondFactor() }
+
+        case .enrollSecondFactor:
+            enrollmentSection(style)
+
+        case .collectNewPassword:
+            secureField("New password", text: $model.password, style)
+            continueButton("Set password", style) { await model.submitPassword() }
+
+        case .awaitOAuth, .collectCaptcha:
+            caption("Continue in your browser to finish signing in.", style)
+
+        case .done:
+            caption("You're signed in.", style)
+
+        case let .restart(reason):
+            caption("This sign-in was \(reason). Start again.", style)
+            secondaryButton("Start over", style) { model.reset() }
+
+        case let .unknown(status):
+            caption("This sign-in needs an app update (\(status)).", style)
+        }
+
+        if let message = model.errorMessage {
+            if let style {
+                Text(message)
+                    .font(style.smallFont)
+                    .foregroundColor(style.palette.color(.danger))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
                 Text(message).font(.footnote).foregroundColor(.red)
             }
-            if model.busy { ProgressView() }
         }
-        .padding()
-        .onChange(of: model.completed) { done in if done { onComplete() } }
+        if model.busy {
+            if let style {
+                ProgressView().tint(style.palette.color(.primary)).frame(maxWidth: .infinity)
+            } else {
+                ProgressView()
+            }
+        }
     }
 
-    @ViewBuilder private var enrollmentSection: some View {
+    @ViewBuilder private func enrollmentSection(_ style: AtlasStyle?) -> some View {
         if let enrollment = model.enrollment {
-            Text("Scan this in your authenticator, then enter a code.").font(.subheadline)
-            Text(enrollment.uri).font(.caption).textSelection(.enabled)
-            field("Authenticator code", text: $model.code)
-            continueButton("Enable two-factor") { await model.confirmEnrollment() }
+            caption("Scan this in your authenticator, then enter a code.", style)
+            Text(enrollment.uri).font(style?.smallFont ?? .caption).textSelection(.enabled)
+            field("Authenticator code", text: $model.code, style)
+            continueButton("Enable two-factor", style) { await model.confirmEnrollment() }
         } else {
-            continueButton("Set up two-factor") { await model.beginEnrollment() }
+            continueButton("Set up two-factor", style) { await model.beginEnrollment() }
         }
     }
 
-    private func field(_ title: String, text: Binding<String>) -> some View {
-        TextField(title, text: text)
-            .textFieldStyle(.roundedBorder)
-            #if os(iOS)
-            .autocorrectionDisabled(true)
-            .textInputAutocapitalization(.never)
-            #endif
+    @ViewBuilder private func title(_ text: String, _ style: AtlasStyle?) -> some View {
+        if let style {
+            Text(text).font(style.headingFont).foregroundColor(style.palette.color(.text))
+        } else {
+            Text(text).font(.title2).bold()
+        }
     }
 
-    private func secureField(_ title: String, text: Binding<String>) -> some View {
-        SecureField(title, text: text).textFieldStyle(.roundedBorder)
+    @ViewBuilder private func caption(_ text: String, _ style: AtlasStyle?) -> some View {
+        if let style {
+            Text(text).font(style.smallFont).foregroundColor(style.palette.color(.muted))
+        } else {
+            Text(text).font(.subheadline)
+        }
     }
 
-    private func continueButton(_ title: String, _ action: @escaping () async -> Void) -> some View {
-        Button(title) { Task { await action() } }
-            .buttonStyle(.borderedProminent)
-            .disabled(model.busy)
+    @ViewBuilder private func field(_ title: String, text: Binding<String>, _ style: AtlasStyle?) -> some View {
+        if let style {
+            TextField(title, text: text)
+                .modifier(AtlasInputModifier(style: style))
+                #if os(iOS)
+                .autocorrectionDisabled(true)
+                .textInputAutocapitalization(.never)
+                #endif
+        } else {
+            TextField(title, text: text)
+                .textFieldStyle(.roundedBorder)
+                #if os(iOS)
+                .autocorrectionDisabled(true)
+                .textInputAutocapitalization(.never)
+                #endif
+        }
+    }
+
+    @ViewBuilder private func secureField(_ title: String, text: Binding<String>, _ style: AtlasStyle?) -> some View {
+        if let style {
+            SecureField(title, text: text).modifier(AtlasInputModifier(style: style))
+        } else {
+            SecureField(title, text: text).textFieldStyle(.roundedBorder)
+        }
+    }
+
+    @ViewBuilder private func continueButton(
+        _ title: String, _ style: AtlasStyle?, _ action: @escaping () async -> Void
+    ) -> some View {
+        if let style {
+            Button(title) { Task { await action() } }
+                .buttonStyle(AtlasPrimaryButtonStyle(style: style))
+                .disabled(model.busy)
+        } else {
+            Button(title) { Task { await action() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.busy)
+        }
+    }
+
+    @ViewBuilder private func secondaryButton(
+        _ title: String, _ style: AtlasStyle?, _ action: @escaping () async -> Void
+    ) -> some View {
+        if let style {
+            Button(title) { Task { await action() } }
+                .buttonStyle(AtlasSecondaryButtonStyle(style: style))
+                .disabled(model.busy)
+        } else {
+            Button(title) { Task { await action() } }
+        }
     }
 }
-
 /// The view-model behind ``SignIn``: it owns the ``SignInFlow`` and republishes
 /// its step + errors as `@Published` state the view renders. `@MainActor` so the
 /// published mutations are main-thread.
@@ -191,21 +305,39 @@ final class SignInModel: ObservableObject {
     @Published var code = ""
     @Published var busy = false
     @Published var errorMessage: String?
+    /// The typed code of the last error, when the SDK knows it.
+    @Published var errorCode: AtlasErrorCode?
+    /// Set once the server refused to send email (`EMAIL_DELIVERY_NOT_CONFIGURED`),
+    /// so the UI stops offering email-based steps.
+    @Published var emailUnavailable = false
     @Published var completed = false
     @Published var enrollment: MfaEnrollment?
+    /// The instance appearance (dashboard design + providers), once loaded.
+    @Published var appearanceInfo: AtlasAppearanceInfo?
 
     private let session: AtlasAuthSession
     private var flow: SignInFlow
+    private var appearanceRequested = false
 
-    init(session: AtlasAuthSession) {
+    init(session: AtlasAuthSession, appearanceInfo: AtlasAppearanceInfo? = nil) {
         self.session = session
         self.flow = session.client.signInFlow()
+        self.appearanceInfo = appearanceInfo
+        self.appearanceRequested = appearanceInfo != nil
+    }
+
+    /// Fetch the appearance once. A failure is not an error the user sees: the
+    /// form simply keeps its default look.
+    func loadAppearance() async {
+        guard !appearanceRequested else { return }
+        appearanceRequested = true
+        if let info = try? await session.client.appearance() { appearanceInfo = info }
     }
 
     func reset() {
         flow = session.client.signInFlow()
         step = .collectIdentifier
-        password = ""; code = ""; errorMessage = nil; completed = false; enrollment = nil
+        password = ""; code = ""; errorMessage = nil; errorCode = nil; completed = false; enrollment = nil
     }
 
     func start() async { await drive { try await self.flow.start(identifier: self.identifier) } }
@@ -226,27 +358,36 @@ final class SignInModel: ObservableObject {
         await drive { try await self.flow.attemptMfaEnrollment(factorId: enrollment.factorId, codes: [self.code]) }
     }
 
+    /// Publish an error: the server's own message verbatim (it is written for end
+    /// users), plus its typed code.
+    func present(_ error: Error) {
+        if let error = error as? AtlasError {
+            errorMessage = error.message
+            errorCode = error.knownCode
+            if error.isEmailDeliveryNotConfigured { emailUnavailable = true }
+        } else {
+            errorMessage = error.localizedDescription
+            errorCode = nil
+        }
+    }
+
     /// Run a flow step that returns the next ``SignInStep``, publishing it and
     /// completion.
     private func drive(_ work: @escaping () async throws -> SignInStep) async {
-        busy = true; errorMessage = nil
+        busy = true; errorMessage = nil; errorCode = nil
         do {
             let next = try await work()
             step = next
             if case .done = next { completed = true; await session.reload() }
-        } catch let error as AtlasError {
-            errorMessage = error.message
         } catch {
-            errorMessage = error.localizedDescription
+            present(error)
         }
         busy = false
     }
 
     private func driveVoid(_ work: @escaping () async throws -> Void) async {
-        busy = true; errorMessage = nil
-        do { try await work() }
-        catch let error as AtlasError { errorMessage = error.message }
-        catch { errorMessage = error.localizedDescription }
+        busy = true; errorMessage = nil; errorCode = nil
+        do { try await work() } catch { present(error) }
         busy = false
     }
 }

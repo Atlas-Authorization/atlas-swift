@@ -250,7 +250,12 @@ public final class AtlasClient: @unchecked Sendable {
         refreshCookie: String?,
         authorization: String? = nil
     ) async throws -> (Data, HTTPURLResponse) {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        // `appendingPathComponent` would percent-escape a query string, so a path
+        // carrying one is joined textually (the base never ends in a slash).
+        let url = path.contains("?")
+            ? URL(string: baseURL.absoluteString + path) ?? baseURL.appendingPathComponent(path)
+            : baseURL.appendingPathComponent(path)
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue(publishableKey, forHTTPHeaderField: "x-publishable-key")
         if let refreshCookie {

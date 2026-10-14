@@ -19,7 +19,7 @@ dependency-light Swift Package that speaks the Atlas Frontend API (FAPI) with
 Swift Package Manager. In your `Package.swift`:
 
 ```swift
-.package(path: "../atlas-swift") // or the published git URL
+.package(path: "../ssoly/sdks/swift") // or the published git URL
 ```
 
 or in Xcode: **File → Add Package Dependencies → Add Local**.
@@ -202,6 +202,19 @@ do {
 `.transport` (network) and `.decoding` (contract drift) are distinct cases;
 `.notSignedIn` is raised locally when an authenticated call has no session.
 
+`error.knownCode` maps the code to the `AtlasErrorCode` enum when the SDK knows
+it. When the app has no way to send email, any email-sending step (email code,
+magic link, reset, verification) is refused with **422
+`EMAIL_DELIVERY_NOT_CONFIGURED`** before anything is issued; `error.message` is
+the server's end-user wording ("This app can't send email right now. Try another
+sign-in method or contact the app owner.") — show it as-is. `SignIn` does, and
+stops offering "Email me a code" afterwards.
+
+```swift
+if error.isEmailDeliveryNotConfigured { showBanner(error.message) }
+// or: error.knownCode == .emailDeliveryNotConfigured
+```
+
 ## Tests
 
 ```bash
@@ -338,7 +351,7 @@ backend-only and never sent (§4.1).
 
 ## SwiftUI components
 
-Prebuilt, themeable views (gated to iOS 15+/macOS 12+; the non-UI core still
+Prebuilt views that render your dashboard design (gated to iOS 15+/macOS 12+; the non-UI core still
 builds on lower targets via `#if canImport(SwiftUI)`). `AtlasAuthSession` is the
 observable the UI binds to — the signed-in user, a loading flag, the last error.
 (It is distinct from the persisted `AtlasSession` token value the `TokenStore`
@@ -365,3 +378,44 @@ var body: some View {
 keep `@Published` state in step. The on-device rendering and the live Apple/Google
 system sheets need a simulator/device to verify; the logic they drive is covered
 by the headless unit tests.
+
+### Dashboard design + `appearance` overrides
+
+New in **0.5.0**. `SignIn` reads the instance's appearance (`GET /v1/appearance`,
+also public as `client.appearance()`). When the app owner has saved a design in
+the Atlas dashboard, the view renders it natively:
+
+- colours from the light / dark palettes (following the system appearance, or
+  the design's forced `colorScheme`);
+- card radius, control radius (999 = capsule), border width, card style
+  (solid / glass / outline / none), card shadow level and width;
+- density spacing (gaps, card padding, control height);
+- button style (solid / outline / soft / gradient), input style
+  (outline / filled / underline), social-button layout (list / grid / icons);
+- base font size, heading scale, body / heading weights, uppercase buttons;
+- the logo (`logo_url`, or `logo_dark_url` in dark mode).
+
+With no saved design (`design: null`) and no `appearance`, `SignIn` looks exactly
+as it did in 0.4.0.
+
+Override any token in code — a set field wins over the dashboard:
+
+```swift
+var look = AtlasAppearance()
+look.palette[.primary] = "#0f766e"   // brand slots carry into dark mode too
+look.controlRadius = 999             // capsule buttons + inputs
+look.buttonStyle = .soft
+look.colorScheme = .light            // ignore system dark mode
+// look.applyDashboardDesign = false // use ONLY these overrides
+
+SignIn(session: session, appearance: look,
+       onSocialSignIn: { provider in startOAuth(provider) }) // shows the enabled providers
+```
+
+**Fonts.** The dashboard names a font from Atlas's catalog (Inter, Roboto, Source
+Serif 4, JetBrains Mono, …). `SignIn` uses that family when your app bundles it,
+otherwise the system font of the same kind (SF / New York / SF Mono) at the
+design's weight. To bundle one, add the `.ttf` / `.otf` files to your app target
+and list them under `UIAppFonts` ("Fonts provided by application") in
+`Info.plist` (macOS: `ATSApplicationFontsPath`). The family name must match the
+catalog's (`Inter`, `Source Serif 4`, …).
