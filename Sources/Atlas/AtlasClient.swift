@@ -47,6 +47,14 @@ public final class AtlasClient: @unchecked Sendable {
     /// ``DeviceId``). Defaults to ``DeviceId/current(_:)``; return nil to send none.
     public var deviceIdProvider: @Sendable () -> String? = { DeviceId.current() }
 
+    /// Opens the logout URL ``signOut(returnURL:followLogoutURL:)`` hands back —
+    /// the upstream OIDC provider's end-session URL, or the SAML Single Logout
+    /// start URL — so the user is signed out there too. Defaults to
+    /// ``AtlasClient/openInSystemBrowser(_:)`` (iOS, macOS; nil on tvOS and
+    /// watchOS, which have no browser). Set it to your own opener, or nil to only
+    /// receive the URL in the ``AtlasSignOutResult``.
+    public var logoutURLOpener: (@Sendable (URL) async -> Void)? = AtlasClient.defaultLogoutURLOpener
+
     /// - Parameters:
     ///   - publishableKey: the instance's `pk_...` publishable key. Sent as
     ///     `x-publishable-key` on every request.
@@ -217,15 +225,35 @@ public final class AtlasClient: @unchecked Sendable {
     /// (`POST /v1/client/sessions/:id/revoke`) and clear local storage. Local
     /// state is cleared even if the network call fails — a client that keeps a
     /// token after the user tapped "sign out" is the worse failure.
-    public func signOut() async throws {
-        defer { try? tokenStore.clear() }
-        guard let stored = try tokenStore.load() else { return }
-        _ = try? await send(
-            "POST",
-            "/v1/client/sessions/\(stored.sessionId)/revoke",
-            body: nil,
-            refreshCookie: cookieHeader(stored)
-        )
+    ///
+    /// When the session came from an upstream OIDC provider set to RP-initiated
+    /// logout, or a SAML connection with Single Logout, Atlas answers with the URL
+    /// that signs the user out there too (``AtlasSignOutResult/upstreamLogoutURL``
+    /// / ``AtlasSignOutResult/samlLogoutURL``, https only). With
+    /// `followLogoutURL` (the default) it is opened through ``logoutURLOpener`` —
+    /// the system browser by default.
+    ///
+    /// - Parameter returnURL: where the upstream sends the browser back; must be
+    ///   on one of the instance's allowed origins.
+    @discardableResult
+    public func signOut(returnURL: URL? = nil, followLogoutURL: Bool = true) async throws -> AtlasSignOutResult {
+        var result = AtlasSignOutResult()
+        if let stored = try tokenStore.load() {
+            let body = returnURL.map { ["return_url": $0.absoluteString, "redirect_url": $0.absoluteString] }
+            if let reply = try? await send(
+                "POST",
+                "/v1/client/sessions/\(stored.sessionId)/revoke",
+                body: body,
+                refreshCookie: cookieHeader(stored)
+            ), (200..<300).contains(reply.1.statusCode) {
+                result = AtlasSignOutResult(responseBody: reply.0)
+            }
+        }
+        try? tokenStore.clear()
+        if followLogoutURL, let url = result.logoutURL, let opener = logoutURLOpener {
+            await opener(url)
+        }
+        return result
     }
 
     /// Whether a session is currently persisted. A cheap, offline check — it does

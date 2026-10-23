@@ -152,6 +152,52 @@ func assertionFinishBody(
     ]
 }
 
+// MARK: - passkey PRF (WebAuthn `prf` extension) pass-through
+
+/// Ask the authenticator for PRF outputs (the WebAuthn `prf` extension) during a
+/// passkey ceremony — e.g. to derive a client-side encryption key that only this
+/// passkey can unlock. The salts and the outputs stay on the device: the outputs
+/// reach only your `onPRFResult` callback and nothing PRF-related is sent to
+/// Atlas. Needs iOS 18 / macOS 15 / visionOS 2; elsewhere the ceremony runs
+/// without it and the callback is not called.
+public struct AtlasPasskeyPRF: Sendable, Equatable {
+    /// The first salt.
+    public let first: Data
+    /// An optional second salt (for key rotation).
+    public let second: Data?
+    /// Per-credential salts for a sign-in (credential id → salts), used instead
+    /// of ``first`` / ``second`` for that credential.
+    public let perCredential: [Data: [Data]]
+
+    public init(first: Data, second: Data? = nil, perCredential: [Data: [Data]] = [:]) {
+        self.first = first
+        self.second = second
+        self.perCredential = perCredential
+    }
+
+    /// Salts given as strings are encoded as UTF-8 (the same rule as the web SDK).
+    public init(salt: String, second: String? = nil) {
+        self.init(first: Data(salt.utf8), second: second.map { Data($0.utf8) })
+    }
+}
+
+/// The PRF outputs of a ceremony. ``isSupported`` is reported on registration
+/// (whether the new passkey supports PRF); ``first`` / ``second`` are the
+/// 32-byte outputs for the salts, when the authenticator evaluated them.
+public struct AtlasPasskeyPRFResult: Sendable, Equatable {
+    public let credentialID: Data
+    public let isSupported: Bool?
+    public let first: Data?
+    public let second: Data?
+
+    public init(credentialID: Data, isSupported: Bool?, first: Data?, second: Data?) {
+        self.credentialID = credentialID
+        self.isSupported = isSupported
+        self.first = first
+        self.second = second
+    }
+}
+
 // MARK: - ASAuthorization ceremony (Apple platforms, OS-version gated)
 
 #if canImport(AuthenticationServices) && !os(watchOS)
@@ -161,6 +207,91 @@ import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
+
+#if !os(tvOS)
+import CryptoKit
+
+@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)
+extension AtlasPasskeyPRF {
+    var registrationInput: ASAuthorizationPublicKeyCredentialPRFRegistrationInput {
+        .inputValues(.init(saltInput1: first, saltInput2: second))
+    }
+
+    var assertionInput: ASAuthorizationPublicKeyCredentialPRFAssertionInput {
+        if perCredential.isEmpty {
+            return .inputValues(.init(saltInput1: first, saltInput2: second))
+        }
+        var map: [Data: ASAuthorizationPublicKeyCredentialPRFAssertionInput.InputValues] = [:]
+        for (id, salts) in perCredential where !salts.isEmpty {
+            map[id] = .init(saltInput1: salts[0], saltInput2: salts.count > 1 ? salts[1] : nil)
+        }
+        return .perCredentialInputValues(map)
+    }
+}
+
+@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)
+private func keyData(_ key: SymmetricKey?) -> Data? {
+    key.map { $0.withUnsafeBytes { Data($0) } }
+}
+#endif
+
+/// Hand a registration's PRF output to `onPRFResult` (no-op where unsupported).
+@available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
+func deliverRegistrationPRF(
+    _ registration: ASAuthorizationPlatformPublicKeyCredentialRegistration,
+    _ onPRFResult: ((AtlasPasskeyPRFResult) -> Void)?
+) {
+    #if !os(tvOS)
+    guard let onPRFResult else { return }
+    if #available(iOS 18.0, macOS 15.0, visionOS 2.0, *), let prf = registration.prf {
+        onPRFResult(AtlasPasskeyPRFResult(
+            credentialID: registration.credentialID,
+            isSupported: prf.isSupported,
+            first: keyData(prf.first),
+            second: keyData(prf.second)
+        ))
+    }
+    #endif
+}
+
+/// Hand an assertion's PRF output to `onPRFResult` (no-op where unsupported).
+@available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
+func deliverAssertionPRF(
+    _ assertion: ASAuthorizationPlatformPublicKeyCredentialAssertion,
+    _ onPRFResult: ((AtlasPasskeyPRFResult) -> Void)?
+) {
+    #if !os(tvOS)
+    guard let onPRFResult else { return }
+    if #available(iOS 18.0, macOS 15.0, visionOS 2.0, *), let prf = assertion.prf {
+        onPRFResult(AtlasPasskeyPRFResult(
+            credentialID: assertion.credentialID,
+            isSupported: true,
+            first: keyData(prf.first),
+            second: keyData(prf.second)
+        ))
+    }
+    #endif
+}
+
+/// Attach the PRF input to a registration request (iOS 18 / macOS 15 and later).
+@available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
+func applyPRF(_ prf: AtlasPasskeyPRF?, to request: ASAuthorizationPlatformPublicKeyCredentialRegistrationRequest) {
+    #if !os(tvOS)
+    if #available(iOS 18.0, macOS 15.0, visionOS 2.0, *), let prf {
+        request.prf = prf.registrationInput
+    }
+    #endif
+}
+
+/// Attach the PRF input to an assertion request (iOS 18 / macOS 15 and later).
+@available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
+func applyPRF(_ prf: AtlasPasskeyPRF?, to request: ASAuthorizationPlatformPublicKeyCredentialAssertionRequest) {
+    #if !os(tvOS)
+    if #available(iOS 18.0, macOS 15.0, visionOS 2.0, *), let prf {
+        request.prf = prf.assertionInput
+    }
+    #endif
+}
 
 /// Wraps the delegate-based ``ASAuthorizationController`` in an async/await call.
 ///
@@ -253,7 +384,11 @@ extension AtlasClient {
     ///   `ASAuthorizationError` if the system ceremony fails or is cancelled.
     @available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
     @discardableResult
-    public func registerPasskey(name: String? = nil) async throws -> Passkey {
+    public func registerPasskey(
+        name: String? = nil,
+        prf: AtlasPasskeyPRF? = nil,
+        onPRFResult: ((AtlasPasskeyPRFResult) -> Void)? = nil
+    ) async throws -> Passkey {
         guard let stored = try tokenStore.load() else { throw AtlasError.notSignedIn }
         let bearer = stored.token
 
@@ -279,11 +414,13 @@ extension AtlasClient {
             name: options.user.name,
             userID: userID
         )
+        applyPRF(prf, to: request)
 
         let credential = try await PasskeyCeremony().perform(request)
         guard let registration = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
             throw AtlasError.decoding("The authenticator returned an unexpected credential type.")
         }
+        if prf != nil { deliverRegistrationPRF(registration, onPRFResult) }
 
         let result = PasskeyRegistrationResult(
             attestationObject: registration.rawAttestationObject ?? Data(),
@@ -314,7 +451,11 @@ extension AtlasClient {
     ///   `ASAuthorizationError` if the system ceremony fails or is cancelled.
     @available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
     @discardableResult
-    public func signInWithPasskey(captchaToken: String? = nil) async throws -> AtlasUser {
+    public func signInWithPasskey(
+        captchaToken: String? = nil,
+        prf: AtlasPasskeyPRF? = nil,
+        onPRFResult: ((AtlasPasskeyPRFResult) -> Void)? = nil
+    ) async throws -> AtlasUser {
         let (beginData, beginResponse) = try await send(
             "POST", "/v1/client/sign_ins/passkey/begin",
             body: passkeySignInBeginBody(captchaToken: captchaToken), refreshCookie: nil
@@ -330,11 +471,13 @@ extension AtlasClient {
             relyingPartyIdentifier: options.rpId
         )
         let request = provider.createCredentialAssertionRequest(challenge: challenge)
+        applyPRF(prf, to: request)
 
         let credential = try await PasskeyCeremony().perform(request)
         guard let assertion = credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
             throw AtlasError.decoding("The authenticator returned an unexpected credential type.")
         }
+        if prf != nil { deliverAssertionPRF(assertion, onPRFResult) }
 
         let result = PasskeyAssertionResult(
             credentialID: assertion.credentialID,
@@ -369,7 +512,12 @@ extension AtlasClient {
     /// account exists only once the passkey verifies, and the session is persisted.
     @available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
     @discardableResult
-    public func createSignUpPasskey(_ flow: PasskeySignUpFlow, name: String? = nil) async throws -> SignInStep {
+    public func createSignUpPasskey(
+        _ flow: PasskeySignUpFlow,
+        name: String? = nil,
+        prf: AtlasPasskeyPRF? = nil,
+        onPRFResult: ((AtlasPasskeyPRFResult) -> Void)? = nil
+    ) async throws -> SignInStep {
         let (id, pollSecret) = try await flow.passkeyContext()
         let (beginData, beginResponse) = try await send(
             "POST", "/v1/client/sign_ups/\(id)/passkey/begin",
@@ -387,10 +535,12 @@ extension AtlasClient {
         let request = provider.createCredentialRegistrationRequest(
             challenge: challenge, name: options.user.name, userID: userID
         )
+        applyPRF(prf, to: request)
         let credential = try await PasskeyCeremony().perform(request)
         guard let registration = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
             throw AtlasError.decoding("The authenticator returned an unexpected credential type.")
         }
+        if prf != nil { deliverRegistrationPRF(registration, onPRFResult) }
         let result = PasskeyRegistrationResult(
             attestationObject: registration.rawAttestationObject ?? Data(),
             clientDataJSON: registration.rawClientDataJSON

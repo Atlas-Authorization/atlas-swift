@@ -2,6 +2,18 @@
 
 All notable changes to the Atlas Swift SDK. The package is versioned by git tag.
 
+## 0.7.0 — 2026-10-24
+
+### Added
+
+- **Upstream logout on sign-out.** `signOut(returnURL:followLogoutURL:)` now returns an `AtlasSignOutResult` with the upstream OIDC provider's `upstreamLogoutURL` and the SAML `samlLogoutURL` (https only) that Atlas hands back when the session came from such a provider, and opens it through `AtlasClient.logoutURLOpener` — by default `AtlasClient.openInSystemBrowser(_:)` (`UIApplication.open` on iOS / visionOS, `NSWorkspace.open` on macOS; none on tvOS and watchOS). `returnURL` must be on an allowed origin.
+- **Device sign-in approval.** `lookupDeviceAuthorization(userCode:)`, `approveDeviceAuthorization(_:)`, `denyDeviceAuthorization(_:)` (`PendingDeviceAuthorization`) let a signed-in iPhone approve the code an Apple TV, Watch or CLI shows; `AtlasClient.formatUserCode(_:)`, `AtlasClient.userCodeFromURL(_:)` (for a scanned QR code). A refusal needing a fresh re-authentication is an `AtlasError` with code `STEP_UP_REQUIRED`.
+- **Passkey PRF pass-through.** `registerPasskey`, `signInWithPasskey` and `createSignUpPasskey` take `prf: AtlasPasskeyPRF` (salts as `Data`, or `AtlasPasskeyPRF(salt:)` as UTF-8; per-credential salts on sign-in) and `onPRFResult`. On iOS 18 / macOS 15 / visionOS 2 the salts go to `ASAuthorizationPublicKeyCredentialPRF…Input` and the outputs (`AtlasPasskeyPRFResult`) reach only the callback — nothing PRF-related is sent to Atlas. Earlier OS versions (and tvOS) run the ceremony without PRF.
+
+### Changed
+
+- `signOut()` returns `AtlasSignOutResult` (`@discardableResult`; existing calls compile unchanged).
+
 ## 0.6.0 — 2026-10-23
 
 ### Added
