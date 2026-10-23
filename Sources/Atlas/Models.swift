@@ -15,12 +15,39 @@ public struct SignInAttempt: Decodable, Sendable, Equatable {
     /// Present for exactly one step — the one that reached `complete`. Exchanged
     /// for a session, then gone.
     public let ticket: String?
+    /// While `needs_policy_acceptance`: the policies the user must accept.
+    public let pendingPolicies: [PendingPolicy]?
+    /// While `needs_policy_acceptance`, on the response that put the attempt there
+    /// only: the one-time proof ``SignInFlow/acceptPolicies(_:pollSecret:)`` sends.
+    public let policyAcceptanceToken: String?
+
+    public init(
+        id: String,
+        status: String,
+        supportedFirstFactors: [String]? = nil,
+        createdSessionId: String? = nil,
+        authorizationURL: String? = nil,
+        ticket: String? = nil,
+        pendingPolicies: [PendingPolicy]? = nil,
+        policyAcceptanceToken: String? = nil
+    ) {
+        self.id = id
+        self.status = status
+        self.supportedFirstFactors = supportedFirstFactors
+        self.createdSessionId = createdSessionId
+        self.authorizationURL = authorizationURL
+        self.ticket = ticket
+        self.pendingPolicies = pendingPolicies
+        self.policyAcceptanceToken = policyAcceptanceToken
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, status, ticket
         case supportedFirstFactors = "supported_first_factors"
         case createdSessionId = "created_session_id"
         case authorizationURL = "authorization_url"
+        case pendingPolicies = "pending_policies"
+        case policyAcceptanceToken = "policy_acceptance_token"
     }
 
     public var isComplete: Bool { status == "complete" }

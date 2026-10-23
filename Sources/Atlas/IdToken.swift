@@ -37,6 +37,14 @@ struct IdTokenAttemptResponse: Decodable {
     let id: String
     let status: String
     let ticket: String?
+    let pendingPolicies: [PendingPolicy]?
+    let policyAcceptanceToken: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, ticket
+        case pendingPolicies = "pending_policies"
+        case policyAcceptanceToken = "policy_acceptance_token"
+    }
 }
 
 /// The nonce a `/id_token/nonce` mint returns.
@@ -106,7 +114,9 @@ extension AtlasClient {
             supportedFirstFactors: nil,
             createdSessionId: nil,
             authorizationURL: nil,
-            ticket: result.ticket
+            ticket: result.ticket,
+            pendingPolicies: result.pendingPolicies,
+            policyAcceptanceToken: result.policyAcceptanceToken
         )
         return .needsNextStep(SignInFlow(client: self, attempt: attempt))
     }

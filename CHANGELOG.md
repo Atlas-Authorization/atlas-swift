@@ -2,6 +2,19 @@
 
 All notable changes to the Atlas Swift SDK. The package is versioned by git tag.
 
+## 0.8.0 — 2026-10-24
+
+### Added
+
+- **Policy acceptance (terms of service, privacy, any policy).** Core API: `AtlasClient.policies(locale:)` (`GET /v1/client/policies`: sanitized `contentHTML` + `contentSHA256`), `policies(resolving:locale:)` (fills a held sign-in's pending list with content), `myPolicies()` and `acceptMyPolicies(_:)` (`/v1/client/me/policies[/accept]`, in-app re-acceptance), `buildPolicyAcceptances(_:evidence:locale:)` and the `PolicyAcceptanceState` value type (ticks, scroll-to-end and view-time evidence, `canSubmit`, `pendingScroll`, `build()`). `SignUpFlow.start` and `PasskeySignUpFlow.start` take `policyAcceptances:`; a 422 `POLICY_ACCEPTANCE_REQUIRED` is `AtlasError.isPolicyAcceptanceRequired` with the per-policy reasons in `AtlasError.policyProblems` (`AtlasErrorItem.meta`).
+- **Held attempts.** The new sign-in status `needs_policy_acceptance` is `SignInStep.acceptPolicies(pending:)` (and `ResetStep.acceptPolicies`); `SignInFlow`, `SignUpFlow`, `PasswordResetFlow` and `PasskeySignUpFlow` gain `acceptPolicies(_:pollSecret:)` (`POST /v1/client/sign_ins/:id/accept_policies` with the one-time `policy_acceptance_token`, else the poll secret). `SignInAttempt` decodes `pendingPolicies` and `policyAcceptanceToken`. `signInWithPasskey` throws `AtlasPolicyAcceptanceNeeded` (carrying the flow to continue) when the server holds a verified passkey sign-in for a policy.
+- **Redirect callbacks.** `AtlasRedirectResult(url:)` and `AtlasClient.completeRedirect(_:)` read `__atlas_attempt`, `__atlas_ticket`, `__atlas_status` and the one-time `__atlas_policy_token` from an `ASWebAuthenticationSession` callback and either sign in or return a flow that keeps the token.
+- **SwiftUI.** `PolicyAcceptanceModel`, `AtlasPolicyConsent` (combined or per-policy checkbox with an in-app document viewer, clickwrap text, the unskippable scroll sheet: no close, no swipe or Esc dismissal, Accept enabled once the end is visible or the text fits, Decline cancels) and `AtlasPolicyGate` (a banner for in-app re-acceptance). The sanitized HTML is drawn as attributed text, with no web view, so it works on tvOS and watchOS. The prebuilt `SignIn` shows the "accept to continue" step (and can `resume` a flow from a redirect); the new prebuilt `SignUp` view creates the account with the instance's policies, the emailed code and the held step. tvOS: per-policy Read buttons and focusable text for the remote; watchOS: the crown scrolls the document and the buttons sit at its end.
+
+### Changed
+
+- `SignInStep` gains `acceptPolicies(pending:)`, `SignInStatus` gains `needsPolicyAcceptance`, `AtlasErrorItem` gains an optional `meta`, and `AtlasErrorCode` gains `policyAcceptanceRequired`: an exhaustive `switch` over these needs the new case.
+
 ## 0.7.0 — 2026-10-24
 
 ### Added

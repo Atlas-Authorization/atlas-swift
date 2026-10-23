@@ -9,11 +9,15 @@ public struct AtlasErrorItem: Codable, Sendable, Equatable {
     public let code: String
     public let message: String
     public let param: String?
+    /// Structured detail some errors carry (e.g. `POLICY_ACCEPTANCE_REQUIRED`
+    /// names the policies to show in `meta.policies`).
+    public let meta: JSONValue?
 
-    public init(code: String, message: String, param: String? = nil) {
+    public init(code: String, message: String, param: String? = nil, meta: JSONValue? = nil) {
         self.code = code
         self.message = message
         self.param = param
+        self.meta = meta
     }
 }
 
@@ -50,6 +54,21 @@ public enum AtlasError: Error, Sendable {
     /// The step needs a captcha (`CAPTCHA_REQUIRED`) or the one sent was refused
     /// (`CAPTCHA_FAILED`): run the captcha and retry with its token.
     public var isCaptchaRequired: Bool { knownCode == .captchaRequired || knownCode == .captchaFailed }
+
+    /// 422 `POLICY_ACCEPTANCE_REQUIRED`: a required policy was not accepted, or a new
+    /// version was published while the form was open. ``policyProblems`` says which;
+    /// reload ``AtlasClient/policies(locale:)`` and ask again.
+    public var isPolicyAcceptanceRequired: Bool { knownCode == .policyAcceptanceRequired }
+
+    /// What a `POLICY_ACCEPTANCE_REQUIRED` refusal asks for (`meta.policies`); empty
+    /// for any other error.
+    public var policyProblems: [PolicyProblem] {
+        guard case let .api(_, errors) = self,
+              let item = errors.first(where: { $0.code == AtlasErrorCode.policyAcceptanceRequired.rawValue }),
+              case let .object(meta)? = item.meta,
+              case let .array(list)? = meta["policies"] else { return [] }
+        return list.compactMap(PolicyProblem.init(json:))
+    }
 
     /// The HTTP status for an `.api` error; nil for local/transport failures.
     public var status: Int? {
@@ -97,6 +116,9 @@ public enum AtlasErrorCode: String, Sendable, CaseIterable {
     case captchaFailed = "CAPTCHA_FAILED"
     /// 403 — the step needs a challenge but no captcha provider is configured.
     case challengeUnavailable = "CHALLENGE_UNAVAILABLE"
+    /// 422 — a required policy (terms of service, privacy, …) was not accepted in
+    /// the sign-up, or its version is stale. ``AtlasError/policyProblems`` says which.
+    case policyAcceptanceRequired = "POLICY_ACCEPTANCE_REQUIRED"
 }
 
 extension AtlasError: LocalizedError {

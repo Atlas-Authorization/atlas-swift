@@ -447,7 +447,8 @@ extension AtlasClient {
     ///   `CAPTCHA_REQUIRED` (``AtlasError/isCaptchaRequired``): run the captcha
     ///   and call again with its token.
     /// - Returns: the freshly signed-in ``AtlasUser``.
-    /// - Throws: ``AtlasError`` on an API failure; the platform
+    /// - Throws: ``AtlasPolicyAcceptanceNeeded`` when the server holds the sign-in for
+    ///   a policy the user must accept (continue with its `flow`); ``AtlasError`` on an API failure; the platform
     ///   `ASAuthorizationError` if the system ceremony fails or is cancelled.
     @available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
     @discardableResult
@@ -492,6 +493,13 @@ extension AtlasClient {
             body: body, refreshCookie: nil
         )
         try throwIfError(status: finishResponse.statusCode, data: finishData)
+
+        // The credential is verified but the server holds the sign-in for a policy
+        // the user must accept: hand back the attempt to continue with.
+        if let held = try? decode(SignInAttempt.self, from: finishData),
+           held.status == SignInStatus.needsPolicyAcceptance.rawValue {
+            throw AtlasPolicyAcceptanceNeeded(flow: SignInFlow(client: self, attempt: held))
+        }
 
         let session = try decode(PasskeySignInResponse.self, from: finishData)
         let refresh = extractCookie(Cookie.refresh, from: finishResponse)
@@ -575,6 +583,7 @@ public actor PasskeySignUpFlow {
     private let client: AtlasClient
     private var attempt: SignInAttempt?
     private var pollSecret: String?
+    private var policyToken: String?
 
     public init(client: AtlasClient) { self.client = client }
 
@@ -599,9 +608,11 @@ public actor PasskeySignUpFlow {
         username: String? = nil,
         fields: [String: String]? = nil,
         consent: Bool? = nil,
-        captchaToken: String? = nil
+        captchaToken: String? = nil,
+        policyAcceptances: [PolicyAcceptance]? = nil
     ) async throws -> SignInStep {
         var body: [String: Any] = [:]
+        if let policyAcceptances, !policyAcceptances.isEmpty { body["policy_acceptances"] = policyAcceptances.map(\.json) }
         if let email, !email.isEmpty { body["email"] = email }
         if let username, !username.isEmpty { body["username"] = username }
         if let fields, !fields.isEmpty { body["fields"] = fields }
@@ -624,6 +635,16 @@ public actor PasskeySignUpFlow {
         return try await apply(data)
     }
 
+    /// Accept the policies a held passkey sign-up waits on (see ``SignInFlow/acceptPolicies(_:pollSecret:)``).
+    @discardableResult
+    public func acceptPolicies(_ acceptances: [PolicyAcceptance]) async throws -> SignInStep {
+        guard let id = attempt?.id else { throw AtlasError.notSignedIn }
+        let decoded = try await client.acceptAttemptPolicies(
+            attemptId: id, acceptances: acceptances, policyToken: policyToken, pollSecret: pollSecret
+        )
+        return try await apply(decoded)
+    }
+
     func passkeyContext() throws -> (String, String) {
         guard let id = attempt?.id, let pollSecret else {
             throw AtlasError.decoding("This sign-up cannot create a passkey (start it first).")
@@ -642,7 +663,16 @@ public actor PasskeySignUpFlow {
 
     private func apply(_ data: Data) async throws -> SignInStep {
         let decoded = try client.decode(SignInAttempt.self, from: data)
+        return try await apply(decoded)
+    }
+
+    private func apply(_ decoded: SignInAttempt) async throws -> SignInStep {
         attempt = decoded
+        if let token = decoded.policyAcceptanceToken {
+            policyToken = token
+        } else if decoded.status != SignInStatus.needsPolicyAcceptance.rawValue {
+            policyToken = nil
+        }
         if decoded.isComplete, let ticket = decoded.ticket {
             try await client.exchangeTicket(attemptId: decoded.id, ticket: ticket)
         }

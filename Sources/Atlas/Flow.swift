@@ -31,6 +31,12 @@ public enum SignInStep: Equatable, Sendable {
     case collectEmailCode
     case collectPhoneCode
     case collectCaptcha
+    /// The server holds the attempt until the user accepts these policies (terms of
+    /// service, privacy, …). Fetch their text with ``AtlasClient/policies(resolving:locale:)``,
+    /// then call `acceptPolicies(_:)` on the flow. The list may be empty when the
+    /// attempt came back from a redirect, which carries no list: every required
+    /// policy is then to be shown.
+    case acceptPolicies(pending: [PendingPolicy])
     case awaitOAuth
     case collectNewPassword
     /// Terminal success — the session is already persisted.
@@ -50,6 +56,7 @@ public enum SignInStatus: String, Sendable {
     case needsOAuthCallback = "needs_oauth_callback"
     case needsNewPassword = "needs_new_password"
     case needsCaptcha = "needs_captcha"
+    case needsPolicyAcceptance = "needs_policy_acceptance"
     case complete
     case abandoned
 }
@@ -71,6 +78,8 @@ public func signInStep(_ attempt: SignInAttempt) -> SignInStep {
         return .collectEmailCode
     case .needsCaptcha:
         return .collectCaptcha
+    case .needsPolicyAcceptance:
+        return .acceptPolicies(pending: attempt.pendingPolicies ?? [])
     case .needsOAuthCallback:
         return .awaitOAuth
     case .needsNewPassword:
@@ -159,6 +168,9 @@ public struct SecondFactorChallenge: Decodable, Sendable, Equatable {
 public actor SignInFlow {
     private let client: AtlasClient
     private var attempt: SignInAttempt?
+    /// The one-time proof for `accept_policies`, kept from the response (or the
+    /// redirect) that held the attempt.
+    private var policyToken: String?
 
     public init(client: AtlasClient) {
         self.client = client
@@ -169,6 +181,7 @@ public actor SignInFlow {
     public init(client: AtlasClient, attempt: SignInAttempt) {
         self.client = client
         self.attempt = attempt
+        self.policyToken = attempt.policyAcceptanceToken
     }
 
     /// The current attempt's status, or `needs_identifier` before one is started.
@@ -182,6 +195,26 @@ public actor SignInFlow {
 
     /// The attempt id, once started — what a resumed step targets.
     public var attemptId: String? { attempt?.id }
+
+    /// While held at `needs_policy_acceptance`: the policies to accept (empty when
+    /// the attempt was resumed from a redirect; see ``SignInStep/acceptPolicies(pending:)``).
+    public var pendingPolicies: [PendingPolicy] { attempt?.pendingPolicies ?? [] }
+
+    /// Accept the policies the server holds this attempt for
+    /// (`POST /v1/client/sign_ins/:id/accept_policies`), then continue: usually to
+    /// ``SignInStep/done(sessionId:)`` (after any second factor), or back to
+    /// ``SignInStep/acceptPolicies(pending:)`` when a newer version was published
+    /// meanwhile. Sends the one-time token the attempt came with, else `pollSecret`
+    /// (a magic-link or QR tab). A refusal (422 `POLICY_ACCEPTANCE_REQUIRED`) leaves
+    /// the attempt intact so the user can retry.
+    @discardableResult
+    public func acceptPolicies(_ acceptances: [PolicyAcceptance], pollSecret: String? = nil) async throws -> SignInStep {
+        guard let id = attempt?.id else { throw AtlasError.notSignedIn }
+        let decoded = try await client.acceptAttemptPolicies(
+            attemptId: id, acceptances: acceptances, policyToken: policyToken, pollSecret: pollSecret
+        )
+        return try await apply(decoded)
+    }
 
     /// Create the attempt with the identifier (§5). Returns the next step — a
     /// password/email-code first factor, or a captcha challenge.
@@ -333,6 +366,11 @@ public actor SignInFlow {
     /// session before resolving the step to `.done`.
     private func apply(_ decoded: SignInAttempt) async throws -> SignInStep {
         attempt = decoded
+        if let token = decoded.policyAcceptanceToken {
+            policyToken = token
+        } else if decoded.status != SignInStatus.needsPolicyAcceptance.rawValue {
+            policyToken = nil
+        }
         if decoded.isComplete, let ticket = decoded.ticket {
             try await client.exchangeTicket(attemptId: decoded.id, ticket: ticket)
         }
@@ -353,6 +391,7 @@ struct BackupCodesEnvelope: Decodable {
 public actor SignUpFlow {
     private let client: AtlasClient
     private var attempt: SignInAttempt?
+    private var policyToken: String?
 
     public init(client: AtlasClient) { self.client = client }
 
@@ -363,8 +402,15 @@ public actor SignUpFlow {
     }
     public var attemptId: String? { attempt?.id }
 
+    /// While held at `needs_policy_acceptance` (a social sign-up that still owes a
+    /// policy): the policies to accept.
+    public var pendingPolicies: [PendingPolicy] { attempt?.pendingPolicies ?? [] }
+
     /// Start the sign-up. `fields` carries the tenant's configured extra fields;
-    /// `consent` satisfies a required legal-consent gate.
+    /// `consent` satisfies a required legal-consent gate. `policyAcceptances`
+    /// carries the policies the user accepted (build them with
+    /// ``PolicyAcceptanceState/build(locale:)``); without a required one the server
+    /// refuses with 422 `POLICY_ACCEPTANCE_REQUIRED` (``AtlasError/policyProblems``).
     @discardableResult
     public func start(
         email: String,
@@ -372,14 +418,26 @@ public actor SignUpFlow {
         captchaToken: String? = nil,
         fields: [String: String]? = nil,
         consent: Bool? = nil,
-        organizationId: String? = nil
+        organizationId: String? = nil,
+        policyAcceptances: [PolicyAcceptance]? = nil
     ) async throws -> SignInStep {
         var body: [String: Any] = ["email": email, "password": password]
+        if let policyAcceptances, !policyAcceptances.isEmpty { body["policy_acceptances"] = policyAcceptances.map(\.json) }
         if let captchaToken { body["captcha_token"] = captchaToken }
         if let fields { body["fields"] = fields }
         if let consent { body["consent"] = consent }
         if let organizationId { body["organization_id"] = organizationId }
         return try await post("/v1/client/sign_ups", body)
+    }
+
+    /// Accept the policies a held sign-up waits on (see ``SignInFlow/acceptPolicies(_:pollSecret:)``).
+    @discardableResult
+    public func acceptPolicies(_ acceptances: [PolicyAcceptance], pollSecret: String? = nil) async throws -> SignInStep {
+        guard let id = attempt?.id else { throw AtlasError.notSignedIn }
+        let decoded = try await client.acceptAttemptPolicies(
+            attemptId: id, acceptances: acceptances, policyToken: policyToken, pollSecret: pollSecret
+        )
+        return try await apply(decoded)
     }
 
     /// Resend the verification email.
@@ -400,7 +458,16 @@ public actor SignUpFlow {
         let (data, response) = try await client.sendJSON("POST", path, json: body, refreshCookie: nil)
         try client.throwIfError(status: response.statusCode, data: data)
         let decoded = try client.decode(SignInAttempt.self, from: data)
+        return try await apply(decoded)
+    }
+
+    private func apply(_ decoded: SignInAttempt) async throws -> SignInStep {
         attempt = decoded
+        if let token = decoded.policyAcceptanceToken {
+            policyToken = token
+        } else if decoded.status != SignInStatus.needsPolicyAcceptance.rawValue {
+            policyToken = nil
+        }
         if decoded.isComplete, let ticket = decoded.ticket {
             try await client.exchangeTicket(attemptId: decoded.id, ticket: ticket)
         }
@@ -416,6 +483,9 @@ public enum ResetStep: Equatable, Sendable {
     case collectEmailCode
     case collectSecondFactor
     case collectNewPassword
+    /// The server holds the reset until the user accepts these policies; call
+    /// ``PasswordResetFlow/acceptPolicies(_:pollSecret:)``.
+    case acceptPolicies(pending: [PendingPolicy])
     case done
     case unknown(status: String)
 }
@@ -427,6 +497,7 @@ public enum ResetStep: Equatable, Sendable {
 public actor PasswordResetFlow {
     private let client: AtlasClient
     private var attempt: SignInAttempt?
+    private var policyToken: String?
 
     public init(client: AtlasClient) { self.client = client }
 
@@ -439,6 +510,7 @@ public actor PasswordResetFlow {
         case "needs_email_verification": return .collectEmailCode
         case "needs_second_factor": return .collectSecondFactor
         case "needs_new_password": return .collectNewPassword
+        case "needs_policy_acceptance": return .acceptPolicies(pending: attempt?.pendingPolicies ?? [])
         case "complete": return .done
         default: return .unknown(status: status)
         }
@@ -464,6 +536,16 @@ public actor PasswordResetFlow {
         try await action("attempt_second_factor", ["code": code])
     }
 
+    /// Accept the policies a held reset waits on, then continue.
+    @discardableResult
+    public func acceptPolicies(_ acceptances: [PolicyAcceptance], pollSecret: String? = nil) async throws -> ResetStep {
+        guard let id = attempt?.id else { throw AtlasError.notSignedIn }
+        let decoded = try await client.acceptAttemptPolicies(
+            attemptId: id, acceptances: acceptances, policyToken: policyToken, pollSecret: pollSecret
+        )
+        return try await apply(decoded)
+    }
+
     /// Set the new password; completing it signs the user in.
     @discardableResult
     public func setNewPassword(_ password: String) async throws -> ResetStep {
@@ -479,7 +561,16 @@ public actor PasswordResetFlow {
         let (data, response) = try await client.sendJSON("POST", path, json: body, refreshCookie: nil)
         try client.throwIfError(status: response.statusCode, data: data)
         let decoded = try client.decode(SignInAttempt.self, from: data)
+        return try await apply(decoded)
+    }
+
+    private func apply(_ decoded: SignInAttempt) async throws -> ResetStep {
         attempt = decoded
+        if let token = decoded.policyAcceptanceToken {
+            policyToken = token
+        } else if decoded.status != SignInStatus.needsPolicyAcceptance.rawValue {
+            policyToken = nil
+        }
         if decoded.isComplete, let ticket = decoded.ticket {
             try await client.exchangeTicket(attemptId: decoded.id, ticket: ticket)
         }

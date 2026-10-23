@@ -125,15 +125,20 @@ public struct SignIn: View {
     ///   - onSocialSignIn: when set, the enabled social providers are shown and the
     ///     tapped provider id is passed here (start OAuth with
     ///     ``AtlasClient/oauthAuthorizeURL(provider:redirectURI:)``).
+    ///   - resuming: a flow that stopped elsewhere, to continue here: the one
+    ///     ``AtlasClient/completeRedirect(_:)`` returns after a social sign-in that
+    ///     still owes a policy or a second factor, or the one a passkey sign-in
+    ///     hands back in ``AtlasPolicyAcceptanceNeeded``.
     ///   - onComplete: called after the session is established.
     public init(
         session: AtlasAuthSession,
         appearance: AtlasAppearance? = nil,
         appearanceInfo: AtlasAppearanceInfo? = nil,
         onSocialSignIn: ((String) -> Void)? = nil,
+        resuming: SignInFlow? = nil,
         onComplete: @escaping () -> Void = {}
     ) {
-        _model = StateObject(wrappedValue: SignInModel(session: session, appearanceInfo: appearanceInfo))
+        _model = StateObject(wrappedValue: SignInModel(session: session, appearanceInfo: appearanceInfo, resuming: resuming))
         _device = StateObject(wrappedValue: DeviceSignInModel(session: session))
         self.appearance = appearance
         self.onSocialSignIn = onSocialSignIn
@@ -151,6 +156,7 @@ public struct SignIn: View {
             .onChange(of: model.completed) { done in if done { onComplete() } }
             .onChange(of: device.completed) { done in if done { onComplete() } }
             .task { await model.loadAppearance() }
+            .task { await model.resume() }
     }
 
     @ViewBuilder private var platformBody: some View {
@@ -338,6 +344,15 @@ public struct SignIn: View {
         case .collectNewPassword:
             secureField("New password", text: $model.password, style)
             continueButton("Set password", style) { await model.submitPassword() }
+
+        case .acceptPolicies:
+            AtlasPolicyAcceptStep(
+                policy: model.policy,
+                style: style,
+                busy: model.busy,
+                onAccept: { acceptances in Task { await model.acceptPolicies(acceptances) } },
+                onDecline: { model.declinePolicies() }
+            )
 
         case .awaitOAuth, .collectCaptcha:
             caption("Continue in your browser to finish signing in.", style)
@@ -554,15 +569,57 @@ final class SignInModel: ObservableObject {
     /// The single-use nonce the next Sign in with Apple request carries.
     @Published var appleNonce: String?
 
+    /// The policies a held sign-in asks the user to accept.
+    let policy = PolicyAcceptanceModel()
+
     private let session: AtlasAuthSession
     private var flow: SignInFlow
     private var appearanceRequested = false
+    private var pendingResume: SignInFlow?
 
-    init(session: AtlasAuthSession, appearanceInfo: AtlasAppearanceInfo? = nil) {
+    init(session: AtlasAuthSession, appearanceInfo: AtlasAppearanceInfo? = nil, resuming: SignInFlow? = nil) {
         self.session = session
-        self.flow = session.client.signInFlow()
+        self.flow = resuming ?? session.client.signInFlow()
+        self.pendingResume = resuming
         self.appearanceInfo = appearanceInfo
         self.appearanceRequested = appearanceInfo != nil
+    }
+
+    /// Continue a flow handed in at creation (see ``SignIn``'s `resuming`).
+    func resume() async {
+        guard let resumed = pendingResume else { return }
+        pendingResume = nil
+        await publish(await resumed.step)
+    }
+
+    /// Show `next`; for a held sign-in, load the policies it asks for.
+    private func publish(_ next: SignInStep) async {
+        step = next
+        if case let .acceptPolicies(pending) = next {
+            policy.reset()
+            do {
+                policy.load(try await session.client.policies(resolving: pending))
+            } catch {
+                present(error)
+                policy.load([])
+            }
+        }
+    }
+
+    /// Send the acceptances for the held sign-in and continue.
+    func acceptPolicies(_ acceptances: [PolicyAcceptance]) async {
+        await drive { try await self.flow.acceptPolicies(acceptances) }
+        if errorCode == .policyAcceptanceRequired, case let .acceptPolicies(pending) = step {
+            // A newer version was published while the screen was open: show it.
+            if let fresh = try? await session.client.policies(resolving: pending) { policy.load(fresh) }
+        }
+    }
+
+    /// The user declined: abandon this attempt and start over.
+    func declinePolicies() {
+        let title = policy.state.policies.first?.title ?? "required policies"
+        reset()
+        errorMessage = PolicyText.declined(title)
     }
 
     /// Whether the instance enables Sign in with Apple.
@@ -580,6 +637,7 @@ final class SignInModel: ObservableObject {
         flow = session.client.signInFlow()
         step = .collectIdentifier
         password = ""; code = ""; errorMessage = nil; errorCode = nil; completed = false; enrollment = nil
+        policy.reset()
     }
 
     func start() async { await drive { try await self.flow.start(identifier: self.identifier) } }
@@ -591,7 +649,7 @@ final class SignInModel: ObservableObject {
     func beginEnrollment() async {
         await driveVoid {
             self.enrollment = try await self.flow.prepareMfaEnrollment()
-            self.step = await self.flow.step
+            await self.publish(await self.flow.step)
         }
     }
 
@@ -641,7 +699,7 @@ final class SignInModel: ObservableObject {
                 await self.finishSignedIn()
             case let .needsNextStep(next):
                 self.flow = next
-                self.step = await next.step
+                await self.publish(await next.step)
             }
         }
     }
@@ -656,6 +714,10 @@ final class SignInModel: ObservableObject {
                 await self.finishSignedIn()
             } catch let error as ASAuthorizationError where error.code == .canceled {
                 return
+            } catch let held as AtlasPolicyAcceptanceNeeded {
+                // The passkey checked out; the server wants a policy accepted first.
+                self.flow = held.flow
+                await self.publish(await held.flow.step)
             }
         }
     }
@@ -686,7 +748,7 @@ final class SignInModel: ObservableObject {
         busy = true; errorMessage = nil; errorCode = nil
         do {
             let next = try await work()
-            step = next
+            await publish(next)
             if case .done = next { completed = true; await session.reload() }
         } catch {
             present(error)

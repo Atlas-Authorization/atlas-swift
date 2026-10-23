@@ -461,11 +461,52 @@ var body: some View {
 }
 ```
 
-`SignIn` wraps the flow driver end to end; `AtlasAuthSession` exposes
+`SignIn` wraps the flow driver end to end, and `SignUp(session:)` creates an
+account (email, password, the instance's policies, the emailed code); `AtlasAuthSession` exposes
 `signIn(email:password:)`, `signOut()`, and `reload()` as `async` methods that
 keep `@Published` state in step. The on-device rendering and the live Apple/Google
 system sheets need a simulator/device to verify; the logic they drive is covered
 by the headless unit tests.
+
+### Policy acceptance (terms of service, privacy, any policy)
+
+Atlas can require acceptance of policies at sign-up and re-acceptance at sign-in.
+The prebuilt `SignUp` and `SignIn` views handle it on every platform; the pieces
+are public for a custom screen.
+
+```swift
+// Sign-up: load, show, send.
+let list = try await atlas.policies()                       // GET /v1/client/policies
+var state = PolicyAcceptanceState(policies: list.policies)  // ticks + reading evidence
+state.setAllCheckboxes(true)                                // what your checkbox does
+let acceptances = state.build(locale: "en")                 // [PolicyAcceptance]
+let flow = atlas.signUpFlow()
+try await flow.start(email: email, password: password, policyAcceptances: acceptances)
+// A 422 POLICY_ACCEPTANCE_REQUIRED: error.isPolicyAcceptanceRequired, error.policyProblems.
+
+// Sign-in the server holds for a policy: the step is .acceptPolicies.
+let step = try await signIn.attemptPassword(password)
+if case let .acceptPolicies(pending) = step {
+    let policies = try await atlas.policies(resolving: pending) // adds the content
+    // ...show them, build the acceptances, then:
+    try await signIn.acceptPolicies(acceptances)
+}
+
+// Social sign-in: keep the one-time policy token from the callback URL.
+if case let .needsNextStep(flow)? = try await atlas.completeRedirect(callbackURL) {
+    SignIn(session: session, resuming: flow)
+}
+
+// In-app re-acceptance (a new version during a grace window).
+let mine = try await atlas.myPolicies()
+try await atlas.acceptMyPolicies(acceptances)
+```
+
+Display modes: `checkbox` (names open the document in place), `scroll` (an
+unskippable sheet; Accept enables once the end is visible or the text fits;
+Decline cancels) and `link` (clickwrap text; submitting accepts).
+`scrolled_to_end` and `view_ms` are client-attested evidence, not a security
+boundary. `AtlasPolicyGate(session:)` is a banner for in-app re-acceptance.
 
 ### Dashboard design + `appearance` overrides
 
