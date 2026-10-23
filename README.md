@@ -1,6 +1,7 @@
 # Atlas Swift SDK
 
-The official native iOS / macOS SDK for the [Atlas](../../) auth platform — a
+The official native SDK for Apple platforms — iOS, iPadOS, macOS, visionOS,
+tvOS and watchOS — for the [Atlas](../../) auth platform: a
 dependency-light Swift Package that speaks the Atlas Frontend API (FAPI) with
 `URLSession` + `async/await` + `Codable`. It mirrors the vanilla JS client
 (`@atlas/js`) endpoint-for-endpoint and shape-for-shape.
@@ -25,6 +26,27 @@ Swift Package Manager. In your `Package.swift`:
 or in Xcode: **File → Add Package Dependencies → Add Local**.
 
 No third-party dependencies. Requires iOS 13+/macOS 12+ (async/await).
+
+### Platform matrix
+
+| | iOS / iPadOS | macOS | visionOS | tvOS | watchOS |
+|---|---|---|---|---|---|
+| Core client (`AtlasClient`, flows, `/me`, orgs, native session) | 13+ | 12+ | 1+ | 13+ | 6+ |
+| Sign in on another device (`startDeviceSignIn` / `waitForDeviceSignIn`) | 13+ | 12+ | 1+ | 13+ | 6+ |
+| Passkeys (`signInWithPasskey`, `registerPasskey`) | 16+ | 12+ | 1+ | 16+ | — (no platform passkey API) |
+| Sign in with Apple (`SignInWithApple`, id_token exchange) | 13+ | 10.15+ | 1+ | 13+ | 6+ |
+| Prebuilt SwiftUI (`SignIn`, `UserButton`, `UserProfile`, `AtlasDeviceSignInView`, `AtlasQRCodeView`) | 15+ | 12+ | 1+ | 17+ | 10+ |
+
+What the prebuilt `SignIn` leads with on each platform:
+
+| Platform | Sign-in experience |
+|---|---|
+| iOS, iPadOS, macOS, visionOS | The email form (identifier → password / email code → 2FA), plus social buttons via `onSocialSignIn`. |
+| tvOS | Two focus sections side by side: **sign in on another device** (code + QR code) and **sign in on this TV** — passkey (the system sheet offers a nearby iPhone/iPad), Sign in with Apple, then the email form. Design-styled controls lift on focus. |
+| watchOS | **Sign in on another device** (QR code + code) first, then Sign in with Apple; the email form is one tap away ("Use email"). |
+
+Sign in on another device needs the app's first-party OAuth client id (see
+[Sign in on another device](#sign-in-on-another-device-apple-tv-apple-watch)).
 
 ## Quick start
 
@@ -100,7 +122,10 @@ let user = try await atlas.signInWithPasskey()
 Both throw `AtlasError` for an API failure and the platform `ASAuthorizationError`
 if the system sheet fails or the user cancels. Available on **iOS 16+, macOS 12+,
 tvOS 16+** (gated with `@available`; the rest of the SDK still builds on older
-targets).
+targets). On tvOS the system sheet lets the person use a passkey from a nearby
+iPhone or iPad. watchOS has no platform passkey API (Apple marks the passkey
+provider unavailable there), so on the watch use Sign in on another device or
+Sign in with Apple.
 
 #### Setup (Associated Domains)
 
@@ -301,7 +326,7 @@ Exchange a provider `id_token` for a session without the redirect flow
 ```swift
 // Apple — mint a nonce, run the system sheet, exchange the identity token.
 let nonce = try await atlas.mintNativeNonce(provider: "apple")
-let apple = try await SignInWithApple().signIn(nonce: nonce)   // iOS 13+/macOS 10.15+
+let apple = try await SignInWithApple().signIn(nonce: nonce)   // iOS 13+, macOS 10.15+, tvOS 13+, watchOS 6+
 switch try await atlas.signInWithIdToken(provider: "apple", idToken: apple.identityToken, nonce: nonce) {
 case .complete(let user):        print("signed in", user.id)   // session persisted
 case .needsNextStep(let flow):   try await flow.attemptSecondFactor(code: "123456")
@@ -349,10 +374,73 @@ let me = try await atlas.updateProfile(firstName: "Ada", unsafeMetadata: ["theme
 `unsafe_metadata` is the only metadata a client may write — `public_metadata` is
 backend-only and never sent (§4.1).
 
+## Sign in on another device (Apple TV, Apple Watch)
+
+Typing an email and password with a Siri Remote or on a watch face is the wrong
+experience. Atlas's OAuth **device authorization grant** (RFC 8628) lets the TV
+or watch show a short code and a QR code; the person approves on their phone or
+computer, where they are already signed in, and the device signs in.
+
+```swift
+let atlas = AtlasClient(
+    publishableKey: "pk_live_...",
+    frontendApi: "clerk.example.com",
+    oauthClientId: "oc_..."          // your first-party OAuth client
+)
+
+let pending = try await atlas.startDeviceSignIn()
+// Show these: the code, where to enter it, and a QR code of the pre-filled link.
+pending.userCode                    // "WDJB-MJHT"
+pending.displayVerificationURI      // "clerk.example.com/oauth2/device"
+pending.qrCodeURL                   // verification_uri_complete
+pending.secondsRemaining()          // countdown
+
+// Polls until approved, then establishes and persists the Atlas session.
+let user = try await atlas.waitForDeviceSignIn(pending)
+```
+
+`waitForDeviceSignIn` polls `/oauth2/token` at the server's `interval`:
+`authorization_pending` keeps waiting, `slow_down` adds 5 seconds to the interval,
+a network failure backs off exponentially (up to 60 s) and keeps going, and the
+wait ends at the code's expiry without polling a dead code. On approval the
+access token is exchanged for a real Atlas session (the first-party token
+exchange), persisted to the `TokenStore` with the device's name
+(`deviceName:`, default `AtlasClient.platformDeviceName`, e.g. "Apple TV"), and the
+user is returned. Cancel the calling task to stop waiting.
+
+Errors are `AtlasError`s carrying the OAuth code: `error.isDeviceCodeExpired`
+(`expired_token` — start again), `error.isDeviceSignInDenied` (`access_denied`),
+and the server's own error for anything else (`invalid_client`,
+`unauthorized_client`, `invalid_scope`, `invalid_grant`).
+
+**Client setup.** In the dashboard, register a **first-party** OAuth client for
+the app with the `urn:ietf:params:oauth:grant-type:device_code` and
+`refresh_token` grants (a public client, no secret). The refresh grant is what
+makes the approval session-eligible. Pass its id as `oauthClientId` (or per call,
+`startDeviceSignIn(clientId:)`); `scopes:` narrows the request (empty asks for
+the client's configured set).
+
+**SwiftUI.** `AtlasDeviceSignInView(session:)` is the whole experience: the code
+in large monospaced type, a QR code (`AtlasQRCodeView`, Core Image's
+`CIQRCodeGenerator` where available and the SDK's own ISO/IEC 18004 encoder on
+watchOS), the verification address, a live countdown, automatic renewal of an
+expired code, and "Try again" after a denial. It lays out natively per platform
+(steps beside a large QR code on tvOS; QR code over the code on watchOS) and uses
+your dashboard design. `SignIn` leads with it on tvOS and watchOS.
+
+```swift
+AtlasDeviceSignInView(session: session) { print("signed in") }
+```
+
 ## SwiftUI components
 
-Prebuilt views that render your dashboard design (gated to iOS 15+/macOS 12+; the non-UI core still
-builds on lower targets via `#if canImport(SwiftUI)`). `AtlasAuthSession` is the
+Prebuilt views that render your dashboard design, native on iOS 15+, macOS 12+,
+visionOS 1+, tvOS 17+ and watchOS 10+ (the non-UI core still builds on lower
+targets via `#if canImport(SwiftUI)`). Each platform gets its own layout and
+controls: a pull-down account menu everywhere but watchOS, where the account row
+opens the system confirmation sheet; the platform's own text-field style; and
+on tvOS the design's type and spacing at TV scale with focus-engine feedback on
+every control. `AtlasAuthSession` is the
 observable the UI binds to — the signed-in user, a loading flag, the last error.
 (It is distinct from the persisted `AtlasSession` token value the `TokenStore`
 holds.)

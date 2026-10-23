@@ -47,6 +47,10 @@ public enum AtlasError: Error, Sendable {
     /// another sign-in method.
     public var isEmailDeliveryNotConfigured: Bool { knownCode == .emailDeliveryNotConfigured }
 
+    /// The step needs a captcha (`CAPTCHA_REQUIRED`) or the one sent was refused
+    /// (`CAPTCHA_FAILED`): run the captcha and retry with its token.
+    public var isCaptchaRequired: Bool { knownCode == .captchaRequired || knownCode == .captchaFailed }
+
     /// The HTTP status for an `.api` error; nil for local/transport failures.
     public var status: Int? {
         if case let .api(status, _) = self { return status }
@@ -86,6 +90,13 @@ public enum AtlasErrorCode: String, Sendable, CaseIterable {
     case passwordBreached = "PASSWORD_BREACHED"
     case passwordPolicy = "PASSWORD_POLICY"
     case locked = "LOCKED"
+    /// 400 — the instance challenges this step and no `captcha_token` was sent
+    /// (e.g. a passkey sign-in begin). Solve the captcha and retry with its token.
+    case captchaRequired = "CAPTCHA_REQUIRED"
+    /// 400 — the `captcha_token` sent was refused.
+    case captchaFailed = "CAPTCHA_FAILED"
+    /// 403 — the step needs a challenge but no captcha provider is configured.
+    case challengeUnavailable = "CHALLENGE_UNAVAILABLE"
 }
 
 extension AtlasError: LocalizedError {

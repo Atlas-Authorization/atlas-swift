@@ -1,3 +1,6 @@
+// The prebuilt SwiftUI screens run natively on iOS 15+, macOS 12+, visionOS 1+,
+// tvOS 17+ and watchOS 10+: each platform gets its own type scale, spacing,
+// focus treatment (tvOS) and materials, never a stand-in for a missing API.
 #if canImport(SwiftUI)
 import SwiftUI
 #if canImport(UIKit)
@@ -54,7 +57,7 @@ enum AtlasFontResolver {
         }
     }
 
-    @available(iOS 15.0, macOS 12.0, *)
+    @available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
     static func font(id: String, size: Double, weight w: Int) -> Font {
         if let family = AtlasFontCatalog.family(for: id), isAvailable(family) {
             return Font.custom(family, size: size).weight(weight(w))
@@ -70,7 +73,7 @@ enum AtlasFontResolver {
 }
 
 /// Everything a view needs to draw one design in one colour mode.
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 struct AtlasStyle {
     let design: AtlasDesign
     let palette: AtlasPalette
@@ -80,19 +83,56 @@ struct AtlasStyle {
         self.palette = design.activePalette(systemIsDark: systemIsDark)
     }
 
+    /// Type scale for the platform: a TV is read from across the room (tvOS's
+    /// own text styles are about twice the phone's), everything else reads the
+    /// design's sizes as-is.
+    static var typeScale: Double {
+        #if os(tvOS)
+        return 2
+        #else
+        return 1
+        #endif
+    }
+
+    /// Spacing scale for the platform: roomier on a TV, tighter on a watch face.
+    static var spaceScale: Double {
+        #if os(tvOS)
+        return 2
+        #elseif os(watchOS)
+        return 0.5
+        #else
+        return 1
+        #endif
+    }
+
     var t: AtlasDesign.Typography { design.typography }
-    var bodyFont: Font { AtlasFontResolver.font(id: t.font, size: Double(t.baseSize), weight: t.bodyWeight) }
-    var smallFont: Font { AtlasFontResolver.font(id: t.font, size: t.smallSize, weight: t.bodyWeight) }
-    var headingFont: Font { AtlasFontResolver.font(id: t.headingFont, size: t.headingSize, weight: t.headingWeight) }
-    var buttonFont: Font { AtlasFontResolver.font(id: t.font, size: Double(t.baseSize), weight: max(500, t.bodyWeight)) }
-    var controlHeight: Double { design.spacing.control }
+    var bodyFont: Font { AtlasFontResolver.font(id: t.font, size: Double(t.baseSize) * Self.typeScale, weight: t.bodyWeight) }
+    var smallFont: Font { AtlasFontResolver.font(id: t.font, size: t.smallSize * Self.typeScale, weight: t.bodyWeight) }
+    var headingFont: Font { AtlasFontResolver.font(id: t.headingFont, size: t.headingSize * Self.typeScale, weight: t.headingWeight) }
+    var buttonFont: Font { AtlasFontResolver.font(id: t.font, size: Double(t.baseSize) * Self.typeScale, weight: max(500, t.bodyWeight)) }
+    /// Control height: controls hold text, so they follow the type scale.
+    var controlHeight: Double { design.spacing.control * Self.typeScale }
+    /// The spacing unit, between-field gap and card padding, platform-scaled.
+    var unit: Double { design.spacing.unit * Self.spaceScale }
+    var gap: Double { design.spacing.gap * Self.spaceScale }
+    var cardPadding: Double { design.spacing.card * Self.spaceScale }
+    var logoHeight: Double { design.logoHeight * Self.typeScale }
+    /// The card's width cap. On tvOS the sign-in card holds two columns (sign in
+    /// on another device | on this TV), so it is sized for the 1920-point screen.
+    var cardMaxWidth: Double {
+        #if os(tvOS)
+        return design.cardMaxWidth * 3.4
+        #else
+        return design.cardMaxWidth
+        #endif
+    }
     /// Corner radius for a control; a pill (999) becomes half the control height.
     var controlRadius: Double { min(Double(design.shape.controlRadius), controlHeight / 2) }
     var borderWidth: Double { Double(design.shape.borderWidth) }
 }
 
 /// The primary call-to-action button, in the design's button style.
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 struct AtlasPrimaryButtonStyle: ButtonStyle {
     let style: AtlasStyle
 
@@ -104,7 +144,7 @@ struct AtlasPrimaryButtonStyle: ButtonStyle {
         return configuration.label
             .font(style.buttonFont)
             .textCase(style.t.letterCase == .uppercase ? .uppercase : nil)
-            .modifier(AtlasTracking(value: style.t.letterCase == .uppercase ? Double(style.t.baseSize) * 0.04 : 0))
+            .modifier(AtlasTracking(value: style.t.letterCase == .uppercase ? Double(style.t.baseSize) * AtlasStyle.typeScale * 0.04 : 0))
             .foregroundColor(foreground)
             .frame(maxWidth: .infinity, minHeight: style.controlHeight)
             .background(background(kind, p).clipShape(shape))
@@ -112,6 +152,7 @@ struct AtlasPrimaryButtonStyle: ButtonStyle {
                      ? shape.strokeBorder(p.color(.primary), lineWidth: max(1, style.borderWidth))
                      : nil)
             .opacity(configuration.isPressed ? 0.85 : 1)
+            .modifier(AtlasFocusLift(cornerRadius: style.controlRadius))
     }
 
     @ViewBuilder private func background(_ kind: AtlasButtonStyleKind, _ p: AtlasPalette) -> some View {
@@ -127,7 +168,7 @@ struct AtlasPrimaryButtonStyle: ButtonStyle {
 }
 
 /// Letter spacing for uppercase labels; view-level tracking needs iOS 16 / macOS 13.
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 struct AtlasTracking: ViewModifier {
     let value: Double
 
@@ -141,7 +182,7 @@ struct AtlasTracking: ViewModifier {
 }
 
 /// A secondary (bordered, text-coloured) button — "Email me a code", social buttons.
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 struct AtlasSecondaryButtonStyle: ButtonStyle {
     let style: AtlasStyle
     var fillWidth = true
@@ -154,47 +195,106 @@ struct AtlasSecondaryButtonStyle: ButtonStyle {
             .textCase(style.t.letterCase == .uppercase ? .uppercase : nil)
             .foregroundColor(p.color(.text))
             .frame(maxWidth: fillWidth ? .infinity : nil, minHeight: style.controlHeight)
-            .padding(.horizontal, fillWidth ? 0 : style.design.spacing.unit * 3)
+            .padding(.horizontal, fillWidth ? 0 : style.unit * 3)
             .background(p.color(.surface).clipShape(shape))
             .overlay(shape.strokeBorder(p.color(.border), lineWidth: max(1, style.borderWidth)))
             .opacity(configuration.isPressed ? 0.85 : 1)
+            .modifier(AtlasFocusLift(cornerRadius: style.controlRadius))
     }
 }
 
+/// The focus-engine treatment for a design-styled control on tvOS: the focused
+/// control lifts (scale + shadow) the way system buttons do, so the remote's
+/// position is always visible. Other platforms have no focus engine to show.
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
+struct AtlasFocusLift: ViewModifier {
+    let cornerRadius: Double
+
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        AtlasFocusLiftBody(content: content, cornerRadius: cornerRadius)
+        #else
+        content
+        #endif
+    }
+}
+
+#if os(tvOS)
+@available(tvOS 17.0, *)
+private struct AtlasFocusLiftBody<Label: View>: View {
+    let content: Label
+    let cornerRadius: Double
+    /// True while the enclosing button holds focus.
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        content
+            .scaleEffect(isFocused ? 1.06 : 1)
+            .shadow(color: Color.black.opacity(isFocused ? 0.35 : 0), radius: isFocused ? 18 : 0, y: isFocused ? 10 : 0)
+            .animation(.easeOut(duration: 0.18), value: isFocused)
+    }
+}
+#endif
+
 /// Input chrome for the design's input style (outline / filled / underline).
-@available(iOS 15.0, macOS 12.0, *)
+/// On tvOS a focused field takes the primary colour and lifts, so the focus
+/// engine's position is visible on the design's own chrome.
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 struct AtlasInputModifier: ViewModifier {
     let style: AtlasStyle
+    @FocusState private var focused: Bool
 
     func body(content: Content) -> some View {
         let p = style.palette
         let shape = RoundedRectangle(cornerRadius: style.controlRadius, style: .continuous)
+        #if os(tvOS)
+        let borderColor = focused ? p.color(.primary) : p.color(.border)
+        let borderWidth = focused ? max(2, style.borderWidth * 2) : style.borderWidth
+        let field = content
+            .focused($focused)
+            .textFieldStyle(.plain)
+            .font(style.bodyFont)
+            .foregroundColor(p.color(.inputText))
+            .frame(minHeight: style.controlHeight)
+        #else
+        let borderColor = p.color(.border)
+        let borderWidth = style.borderWidth
         let field = content
             .textFieldStyle(.plain)
             .font(style.bodyFont)
             .foregroundColor(p.color(.inputText))
             .frame(minHeight: style.controlHeight)
+        #endif
+        let chrome: AnyView
         switch style.design.inputStyle {
         case .outline:
-            return AnyView(field
-                .padding(.horizontal, style.design.spacing.unit * 3)
+            chrome = AnyView(field
+                .padding(.horizontal, style.unit * 3)
                 .background(p.color(.inputBackground).clipShape(shape))
-                .overlay(shape.strokeBorder(p.color(.border), lineWidth: style.borderWidth)))
+                .overlay(shape.strokeBorder(borderColor, lineWidth: borderWidth)))
         case .filled:
             // Text colour washed 6% over the input background, no border (as on the web).
-            return AnyView(field
-                .padding(.horizontal, style.design.spacing.unit * 3)
-                .background(ZStack { p.color(.inputBackground); p.color(.text).opacity(0.06) }.clipShape(shape)))
+            chrome = AnyView(field
+                .padding(.horizontal, style.unit * 3)
+                .background(ZStack { p.color(.inputBackground); p.color(.text).opacity(0.06) }.clipShape(shape))
+                .overlay(focused ? shape.strokeBorder(borderColor, lineWidth: borderWidth) : nil))
         case .underline:
-            return AnyView(field
-                .overlay(Rectangle().fill(p.color(.border)).frame(height: max(1, style.borderWidth)),
+            chrome = AnyView(field
+                .overlay(Rectangle().fill(borderColor).frame(height: max(1, borderWidth)),
                          alignment: .bottom))
         }
+        #if os(tvOS)
+        return AnyView(chrome
+            .scaleEffect(focused ? 1.04 : 1)
+            .animation(.easeOut(duration: 0.18), value: focused))
+        #else
+        return chrome
+        #endif
     }
 }
 
 /// The card around the sign-in form: surface, radius, border, shadow, padding, width.
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 struct AtlasCardModifier: ViewModifier {
     let style: AtlasStyle
     let systemIsDark: Bool
@@ -216,8 +316,8 @@ struct AtlasCardModifier: ViewModifier {
         }()
         let shadow = d.shadow
         return content
-            .padding(d.card.style == .none ? 0 : d.spacing.card)
-            .frame(maxWidth: d.cardMaxWidth)
+            .padding(d.card.style == .none ? 0 : style.cardPadding)
+            .frame(maxWidth: style.cardMaxWidth)
             .background(surface.clipShape(shape))
             .overlay(d.cardBorderWidth > 0
                      ? shape.strokeBorder(p.color(.border), lineWidth: Double(d.cardBorderWidth))
@@ -232,7 +332,7 @@ struct AtlasCardModifier: ViewModifier {
 /// The view only reports the tapped provider id; start the OAuth flow yourself
 /// (``AtlasClient/oauthAuthorizeURL(provider:redirectURI:)`` +
 /// `ASWebAuthenticationSession`).
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 public struct AtlasSocialButtons: View {
     let providers: [String]
     let design: AtlasDesign
@@ -247,7 +347,7 @@ public struct AtlasSocialButtons: View {
 
     public var body: some View {
         let style = AtlasStyle(design: design, systemIsDark: systemScheme == .dark)
-        let gap = design.spacing.unit * 2
+        let gap = style.unit * 2
         switch design.socialLayout {
         case .list:
             VStack(spacing: gap) {
@@ -281,7 +381,7 @@ public struct AtlasSocialButtons: View {
 public enum AtlasProviderNames {
     static let known: [String: String] = [
         "github": "GitHub", "gitlab": "GitLab", "linkedin": "LinkedIn", "linkedin_oidc": "LinkedIn",
-        "x": "X", "twitter": "X", "tiktok": "TikTok", "hubspot": "HubSpot", "huggingface": "Hugging Face",
+        "x": "X", "twitter": "X", "tiktok": "TikTok", "hubspot": "HubSpot", "huggingface": "Hugging Face", "cognito": "AWS Cognito", "paybin": "Paybin", "railway": "Railway",
         "microsoft": "Microsoft", "apple": "Apple", "google": "Google", "facebook": "Facebook",
     ]
 

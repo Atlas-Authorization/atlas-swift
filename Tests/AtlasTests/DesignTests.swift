@@ -234,7 +234,7 @@ final class DesignTests: XCTestCase {
         XCTAssertNil(parseErrorEnvelope(status: 400, data: Data(#"{"errors":[{"code":"SOMETHING_NEW","message":"x"}]}"#.utf8)).knownCode)
     }
 
-    @available(iOS 15.0, macOS 12.0, *)
+    @available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
     @MainActor
     func testSignInShowsTheServerMessageAndStopsOfferingEmail() async throws {
         MockURLProtocol.enqueue(status: 201, json: #"{"id":"sia_1","status":"needs_first_factor"}"#)
@@ -251,7 +251,7 @@ final class DesignTests: XCTestCase {
         XCTAssertFalse(model.busy)
     }
 
-    @available(iOS 15.0, macOS 12.0, *)
+    @available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
     @MainActor
     func testSignInModelLoadsAppearanceOnceAndToleratesFailure() async {
         let session = AtlasAuthSession(client: makeClient())

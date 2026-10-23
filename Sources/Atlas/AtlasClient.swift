@@ -25,8 +25,27 @@ public final class AtlasClient: @unchecked Sendable {
     public let baseURL: URL
     public let tokenStore: TokenStore
 
-    private let session: URLSession
+    /// The transport every request goes through (internal so the per-feature
+    /// extensions, e.g. the device flow's form posts, share it).
+    let session: URLSession
     private let decoder: JSONDecoder
+
+    /// The first-party OAuth client id this app signs in with on devices that
+    /// sign in on another device (RFC 8628, ``startDeviceSignIn(clientId:scopes:)``)
+    /// — the Apple TV / Apple Watch lead flow of the prebuilt ``SignIn`` view.
+    /// `nil` when the app does not use the device flow.
+    public let oauthClientId: String?
+
+    /// The device flow's clock and sleep, injectable so tests drive the polling
+    /// schedule without real waits.
+    var deviceFlowClock: @Sendable () -> Date = { Date() }
+    var deviceFlowSleep: @Sendable (TimeInterval) async throws -> Void = { seconds in
+        try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+    }
+
+    /// Supplies the stable device id sent on account-creating starts (see
+    /// ``DeviceId``). Defaults to ``DeviceId/current(_:)``; return nil to send none.
+    public var deviceIdProvider: @Sendable () -> String? = { DeviceId.current() }
 
     /// - Parameters:
     ///   - publishableKey: the instance's `pk_...` publishable key. Sent as
@@ -38,13 +57,18 @@ public final class AtlasClient: @unchecked Sendable {
     ///   - urlSession: injectable for tests (a mocked `URLProtocol`); defaults to
     ///     an ephemeral session so cookies are never written to shared storage —
     ///     the SDK manages the refresh cookie itself.
+    ///   - oauthClientId: the first-party OAuth client (device_code + refresh_token
+    ///     grants) used by the "sign in on another device" flow on Apple TV and
+    ///     Apple Watch. Optional; only the device flow needs it.
     public init(
         publishableKey: String,
         frontendApi: String,
         tokenStore: TokenStore? = nil,
-        urlSession: URLSession? = nil
+        urlSession: URLSession? = nil,
+        oauthClientId: String? = nil
     ) {
         self.publishableKey = publishableKey
+        self.oauthClientId = oauthClientId
         self.baseURL = AtlasClient.resolveBaseURL(frontendApi)
         self.tokenStore = tokenStore ?? KeychainTokenStore(account: publishableKey)
 
@@ -264,7 +288,7 @@ public final class AtlasClient: @unchecked Sendable {
         if let authorization {
             request.setValue("Bearer \(authorization)", forHTTPHeaderField: "Authorization")
         }
-        if let json {
+        if let json = DeviceId.stamp(json, path: path, method: method, id: deviceIdProvider) {
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.httpBody = try JSONSerialization.data(withJSONObject: json)
         }
@@ -272,7 +296,7 @@ public final class AtlasClient: @unchecked Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await AtlasHTTP.data(for: request, session: session)
         } catch {
             throw AtlasError.transport("We could not reach the server: \(error.localizedDescription)")
         }

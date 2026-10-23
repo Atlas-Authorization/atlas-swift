@@ -36,6 +36,46 @@ public struct OrganizationMembership: Decodable, Sendable, Equatable {
     public let organization: Organization
 }
 
+/// One entry of an organization's audit trail.
+public struct OrganizationAuditLogEntry: Decodable, Sendable, Equatable {
+    public struct Party: Decodable, Sendable, Equatable {
+        public let type: String?
+        public let id: String?
+    }
+
+    public let id: String
+    /// e.g. `member.role_changed`.
+    public let action: String
+    public let actor: Party
+    public let target: Party
+    public let organizationId: String
+    public let ip: String?
+    public let userAgent: String?
+    public let metadata: [String: JSONValue]?
+    /// Epoch ms.
+    public let createdAt: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id, action, actor, target, ip, metadata
+        case organizationId = "organization_id"
+        case userAgent = "user_agent"
+        case createdAt = "created_at"
+    }
+}
+
+/// One page of an organization's audit trail.
+public struct OrganizationAuditLogPage: Decodable, Sendable, Equatable {
+    public let data: [OrganizationAuditLogEntry]
+    public let hasMore: Bool
+    public let nextCursor: String?
+
+    enum CodingKeys: String, CodingKey {
+        case data
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
+    }
+}
+
 /// One of the signed-in user's active devices / sessions (§10.2).
 public struct DeviceSession: Decodable, Sendable, Equatable {
     public let id: String
@@ -125,6 +165,28 @@ extension AtlasClient {
             ListEnvelope<OrganizationMembership>.self, "GET", "/v1/client/me/organizations"
         )
         return envelope.data
+    }
+
+    /// One page of an organization's audit trail
+    /// (`GET /v1/client/organizations/:id/audit_logs`), newest first. Needs the
+    /// `org:sys_memberships:manage` permission (organization admins). `action`
+    /// filters exactly, or by prefix when it ends in a dot (`member.`); page on
+    /// with ``OrganizationAuditLogPage/nextCursor`` as `startingAfter`.
+    public func organizationAuditLog(
+        organizationId: String,
+        limit: Int? = nil,
+        startingAfter: String? = nil,
+        action: String? = nil
+    ) async throws -> OrganizationAuditLogPage {
+        var items: [URLQueryItem] = []
+        if let limit { items.append(URLQueryItem(name: "limit", value: String(limit))) }
+        if let startingAfter { items.append(URLQueryItem(name: "starting_after", value: startingAfter)) }
+        if let action { items.append(URLQueryItem(name: "action", value: action)) }
+        var components = URLComponents()
+        components.queryItems = items.isEmpty ? nil : items
+        let id = organizationId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? organizationId
+        let path = "/v1/client/organizations/\(id)/audit_logs" + (components.percentEncodedQuery.map { "?" + $0 } ?? "")
+        return try await authedDecode(OrganizationAuditLogPage.self, "GET", path)
     }
 
     /// Create an organization (`POST /v1/client/organizations`) — succeeds only

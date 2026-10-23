@@ -1,10 +1,17 @@
+// The prebuilt SwiftUI screens, native on every Apple platform: iOS 15+,
+// macOS 12+ and visionOS 1+ (the form), tvOS 17+ (sign in on another device,
+// passkey, Sign in with Apple and the form, laid out for the focus engine) and
+// watchOS 10+ (sign in on another device and Sign in with Apple first).
 #if canImport(SwiftUI)
 import SwiftUI
+#if canImport(AuthenticationServices)
+import AuthenticationServices
+#endif
 
 /// Prebuilt SwiftUI surfaces — the Swift peer of `@atlas/react`'s `<SignIn>` /
 /// `<UserButton>` / `<UserProfile>` and `useSession`. The whole file is gated on
 /// `canImport(SwiftUI)` so the non-UI core still builds on targets without it, and
-/// each view is availability-gated to modern SwiftUI.
+/// each view is availability-gated to the SwiftUI release it is designed for.
 ///
 /// None of this can be *visually* verified without a device/simulator; the logic
 /// it drives (the flow driver, the client calls) is unit-tested headless.
@@ -15,7 +22,7 @@ import SwiftUI
 /// the last error. It wraps an ``AtlasClient`` and keeps `@Published` state in
 /// step with the token store. `@MainActor` so every mutation lands on the main
 /// thread, where SwiftUI expects it.
-@available(iOS 15.0, macOS 12.0, tvOS 15.0, watchOS 8.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 @MainActor
 public final class AtlasAuthSession: ObservableObject {
     public let client: AtlasClient
@@ -79,19 +86,36 @@ public final class AtlasAuthSession: ObservableObject {
 /// done. On completion it refreshes the bound ``AtlasAuthSession`` and calls
 /// `onComplete`.
 ///
+/// **Per platform.**
+/// - iOS, iPadOS, macOS, visionOS: the email form (plus `onSocialSignIn` buttons).
+/// - tvOS: two focus sections side by side — *sign in on another device* (a code
+///   and QR code, ``AtlasDeviceSignInView``) and *sign in on this TV* (passkey,
+///   Sign in with Apple when the instance enables Apple, then the email form).
+/// - watchOS: *sign in on another device* first, then Sign in with Apple, with
+///   the email form one tap away.
+///
+/// Sign in on another device needs the app's first-party OAuth client id
+/// (``AtlasClient/oauthClientId``); without one the TV and watch screens open on
+/// the sign-in options this device has.
+///
 /// **Design.** On appear it reads the instance's appearance (`GET /v1/appearance`).
 /// When the app owner saved a design in the Atlas dashboard, the view renders it —
 /// colours (light/dark), fonts, radii, borders, shadow, density, button / input /
-/// social-button styles and the logo. Pass `appearance` to override any token in
-/// code (code wins over the dashboard). With no dashboard design and no
-/// `appearance`, the view keeps its plain system styling.
-@available(iOS 15.0, macOS 12.0, *)
+/// social-button styles and the logo — at the platform's scale. Pass `appearance`
+/// to override any token in code (code wins over the dashboard). With no dashboard
+/// design and no `appearance`, the view keeps its plain system styling.
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 public struct SignIn: View {
     @StateObject private var model: SignInModel
+    @StateObject private var device: DeviceSignInModel
     @Environment(\.colorScheme) private var systemScheme
     private let onComplete: () -> Void
     private let appearance: AtlasAppearance?
     private let onSocialSignIn: ((String) -> Void)?
+    #if os(watchOS)
+    /// The email form is the watch's secondary option, opened on request.
+    @State private var showsEmailForm = false
+    #endif
 
     /// - Parameters:
     ///   - session: the session to refresh when sign-in completes.
@@ -110,6 +134,7 @@ public struct SignIn: View {
         onComplete: @escaping () -> Void = {}
     ) {
         _model = StateObject(wrappedValue: SignInModel(session: session, appearanceInfo: appearanceInfo))
+        _device = StateObject(wrappedValue: DeviceSignInModel(session: session))
         self.appearance = appearance
         self.onSocialSignIn = onSocialSignIn
         self.onComplete = onComplete
@@ -122,31 +147,164 @@ public struct SignIn: View {
     }
 
     public var body: some View {
-        Group {
-            if let style {
-                VStack(alignment: .leading, spacing: style.design.spacing.gap) {
-                    if let logo = style.design.logo(systemIsDark: systemScheme == .dark) {
-                        AsyncImage(url: logo) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
-                            .frame(height: style.design.logoHeight)
-                            .frame(maxWidth: .infinity)
-                            .accessibilityHidden(true)
-                    }
-                    content(style)
-                }
-                .foregroundColor(style.palette.color(.text))
-                .modifier(AtlasCardModifier(style: style, systemIsDark: systemScheme == .dark))
-            } else {
-                VStack(alignment: .leading, spacing: 16) { content(nil) }
-                    .padding()
+        platformBody
+            .onChange(of: model.completed) { done in if done { onComplete() } }
+            .onChange(of: device.completed) { done in if done { onComplete() } }
+            .task { await model.loadAppearance() }
+    }
+
+    @ViewBuilder private var platformBody: some View {
+        #if os(tvOS)
+        tvBody
+        #elseif os(watchOS)
+        watchBody
+        #else
+        standardBody
+        #endif
+    }
+
+    // MARK: iOS / macOS / visionOS
+
+    @ViewBuilder private var standardBody: some View {
+        if let style {
+            VStack(alignment: .leading, spacing: style.gap) {
+                logo(style)
+                content(style)
             }
+            .foregroundColor(style.palette.color(.text))
+            .modifier(AtlasCardModifier(style: style, systemIsDark: systemScheme == .dark))
+        } else {
+            VStack(alignment: .leading, spacing: 16) { content(nil) }
+                .padding()
         }
-        .onChange(of: model.completed) { done in if done { onComplete() } }
-        .task { await model.loadAppearance() }
     }
 
     @ViewBuilder private func content(_ style: AtlasStyle?) -> some View {
         title("Sign in", style)
+        stepContent(style)
+        status(style)
+    }
 
+    // MARK: tvOS
+
+    #if os(tvOS)
+    @ViewBuilder private var tvBody: some View {
+        if let style {
+            tvColumns(style)
+                .foregroundColor(style.palette.color(.text))
+                .modifier(AtlasCardModifier(style: style, systemIsDark: systemScheme == .dark))
+        } else {
+            tvColumns(nil)
+                .padding(60)
+        }
+    }
+
+    /// Sign in on another device | sign in on this TV, each its own focus section
+    /// so a swipe left/right moves between them and up/down stays inside one.
+    @ViewBuilder private func tvColumns(_ style: AtlasStyle?) -> some View {
+        VStack(alignment: .leading, spacing: style?.gap ?? 40) {
+            logo(style)
+            title("Sign in", style)
+            HStack(alignment: .top, spacing: 80) {
+                if device.isAvailable {
+                    AtlasDeviceCodePanel(model: device, style: style)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .focusSection()
+                    Divider()
+                }
+                VStack(alignment: .leading, spacing: style?.gap ?? 28) {
+                    if device.isAvailable { caption("Or sign in on this TV", style) }
+                    if case .collectIdentifier = model.step {
+                        passkeyButton(style)
+                        appleButton(style)
+                    }
+                    stepContent(style)
+                    status(style)
+                }
+                .frame(maxWidth: device.isAvailable ? 720 : 900, alignment: .leading)
+                .focusSection()
+            }
+        }
+        .task(id: device.attempt) { await device.run() }
+        .task { await model.prepareAppleSignIn() }
+    }
+    #endif
+
+    // MARK: watchOS
+
+    #if os(watchOS)
+    @ViewBuilder private var watchBody: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: style?.gap ?? 10) {
+                logo(style)
+                title("Sign in", style)
+                if device.isAvailable {
+                    AtlasDeviceCodePanel(model: device, style: style)
+                }
+                if case .collectIdentifier = model.step {
+                    appleButton(style)
+                }
+                if showsEmailForm || !hasPrimaryWatchOption {
+                    stepContent(style)
+                } else {
+                    secondaryButton("Use email", style) { showsEmailForm = true }
+                }
+                status(style)
+            }
+            .foregroundColor(style.map { $0.palette.color(.text) })
+        }
+        .task(id: device.attempt) { await device.run() }
+        .task { await model.prepareAppleSignIn() }
+    }
+
+    /// Whether the watch has a lead option (another device, or Apple) above the form.
+    private var hasPrimaryWatchOption: Bool {
+        device.isAvailable || model.appleEnabled
+    }
+    #endif
+
+    // MARK: on-device sign-in options (tvOS, watchOS)
+
+    #if os(tvOS)
+    /// Passkey sign-in on the TV: the system sheet offers a passkey from a nearby
+    /// iPhone or iPad (or a QR code to scan) — no typing.
+    @ViewBuilder private func passkeyButton(_ style: AtlasStyle?) -> some View {
+        secondaryButton("Sign in with a passkey", style, systemImage: "person.badge.key.fill") {
+            await model.signInWithPasskey()
+        }
+    }
+    #endif
+
+    #if os(tvOS) || os(watchOS)
+    /// The system Sign in with Apple button, shown when the instance enables Apple.
+    @ViewBuilder private func appleButton(_ style: AtlasStyle?) -> some View {
+        if model.appleEnabled {
+            SignInWithAppleButton(.signIn) { request in
+                request.requestedScopes = [.fullName, .email]
+                if let nonce = model.appleNonce { request.nonce = nonce }
+            } onCompletion: { result in
+                Task { await model.completeAppleSignIn(result) }
+            }
+            .signInWithAppleButtonStyle(systemScheme == .dark ? .white : .black)
+            .frame(height: style?.controlHeight ?? AtlasPlatformMetrics.appleButtonHeight)
+            .disabled(model.busy)
+        }
+    }
+    #endif
+
+    // MARK: shared pieces
+
+    @ViewBuilder private func logo(_ style: AtlasStyle?) -> some View {
+        if let style, let logo = style.design.logo(systemIsDark: systemScheme == .dark) {
+            AsyncImage(url: logo) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
+                .frame(height: style.logoHeight)
+                .frame(maxWidth: .infinity)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// The step the flow is on: the identifier, factors, MFA and terminal states.
+    @ViewBuilder private func stepContent(_ style: AtlasStyle?) -> some View {
         switch model.step {
         case .collectIdentifier:
             if let onSocialSignIn, let providers = model.appearanceInfo?.providers, !providers.isEmpty {
@@ -194,7 +352,10 @@ public struct SignIn: View {
         case let .unknown(status):
             caption("This sign-in needs an app update (\(status)).", style)
         }
+    }
 
+    /// The last error and the in-flight indicator.
+    @ViewBuilder private func status(_ style: AtlasStyle?) -> some View {
         if let message = model.errorMessage {
             if let style {
                 Text(message)
@@ -216,8 +377,15 @@ public struct SignIn: View {
 
     @ViewBuilder private func enrollmentSection(_ style: AtlasStyle?) -> some View {
         if let enrollment = model.enrollment {
+            #if os(tvOS) || os(watchOS)
+            // Nothing to copy on a TV or a watch: the authenticator on the phone scans it.
+            caption("Scan this with the authenticator app on your phone, then enter a code.", style)
+            AtlasQRCodeView(text: enrollment.uri)
+                .frame(maxWidth: AtlasPlatformMetrics.enrollmentQRSize, maxHeight: AtlasPlatformMetrics.enrollmentQRSize)
+            #else
             caption("Scan this in your authenticator, then enter a code.", style)
             Text(enrollment.uri).font(style?.smallFont ?? .caption).textSelection(.enabled)
+            #endif
             field("Authenticator code", text: $model.code, style)
             continueButton("Enable two-factor", style) { await model.confirmEnrollment() }
         } else {
@@ -229,7 +397,11 @@ public struct SignIn: View {
         if let style {
             Text(text).font(style.headingFont).foregroundColor(style.palette.color(.text))
         } else {
+            #if os(watchOS)
+            Text(text).font(.headline)
+            #else
             Text(text).font(.title2).bold()
+            #endif
         }
     }
 
@@ -237,7 +409,11 @@ public struct SignIn: View {
         if let style {
             Text(text).font(style.smallFont).foregroundColor(style.palette.color(.muted))
         } else {
+            #if os(watchOS)
+            Text(text).font(.footnote).foregroundColor(.secondary)
+            #else
             Text(text).font(.subheadline)
+            #endif
         }
     }
 
@@ -245,17 +421,11 @@ public struct SignIn: View {
         if let style {
             TextField(title, text: text)
                 .modifier(AtlasInputModifier(style: style))
-                #if os(iOS)
-                .autocorrectionDisabled(true)
-                .textInputAutocapitalization(.never)
-                #endif
+                .modifier(AtlasIdentifierInput())
         } else {
             TextField(title, text: text)
-                .textFieldStyle(.roundedBorder)
-                #if os(iOS)
-                .autocorrectionDisabled(true)
-                .textInputAutocapitalization(.never)
-                #endif
+                .modifier(AtlasPlatformFieldStyle())
+                .modifier(AtlasIdentifierInput())
         }
     }
 
@@ -263,7 +433,7 @@ public struct SignIn: View {
         if let style {
             SecureField(title, text: text).modifier(AtlasInputModifier(style: style))
         } else {
-            SecureField(title, text: text).textFieldStyle(.roundedBorder)
+            SecureField(title, text: text).modifier(AtlasPlatformFieldStyle())
         }
     }
 
@@ -282,21 +452,88 @@ public struct SignIn: View {
     }
 
     @ViewBuilder private func secondaryButton(
-        _ title: String, _ style: AtlasStyle?, _ action: @escaping () async -> Void
+        _ title: String, _ style: AtlasStyle?, systemImage: String? = nil, _ action: @escaping () async -> Void
     ) -> some View {
         if let style {
-            Button(title) { Task { await action() } }
+            Button { Task { await action() } } label: { buttonLabel(title, systemImage) }
                 .buttonStyle(AtlasSecondaryButtonStyle(style: style))
                 .disabled(model.busy)
         } else {
+            #if os(tvOS) || os(watchOS)
+            // On TV and watch a secondary action is still a full, focusable button.
+            Button { Task { await action() } } label: { buttonLabel(title, systemImage) }
+                .buttonStyle(.bordered)
+                .disabled(model.busy)
+            #else
             Button(title) { Task { await action() } }
+            #endif
+        }
+    }
+
+    @ViewBuilder private func buttonLabel(_ title: String, _ systemImage: String?) -> some View {
+        if let systemImage {
+            Label(title, systemImage: systemImage)
+        } else {
+            Text(title)
         }
     }
 }
+
+/// Sizes the platform-specific layouts share.
+enum AtlasPlatformMetrics {
+    /// The Sign in with Apple button's height without a design (HIG minimums).
+    static var appleButtonHeight: Double {
+        #if os(tvOS)
+        return 86
+        #else
+        return 44
+        #endif
+    }
+
+    /// The TOTP enrollment QR code's size on screens that show it as a QR code.
+    static var enrollmentQRSize: Double {
+        #if os(tvOS)
+        return 360
+        #else
+        return 150
+        #endif
+    }
+}
+
+/// The platform's own text-field look for the undesigned form: the rounded border
+/// on iOS, macOS and visionOS; the system field on tvOS (the focus engine's lifted
+/// field) and watchOS (the tap-to-type capsule), the native styles those
+/// platforms define.
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
+struct AtlasPlatformFieldStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(tvOS) || os(watchOS)
+        content.textFieldStyle(.automatic)
+        #else
+        content.textFieldStyle(.roundedBorder)
+        #endif
+    }
+}
+
+/// Input traits for identifiers and codes: no autocorrect or auto-capitalisation
+/// on the platforms that have a software keyboard.
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
+struct AtlasIdentifierInput: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        content
+            .autocorrectionDisabled(true)
+            .textInputAutocapitalization(.never)
+        #else
+        content
+        #endif
+    }
+}
+
 /// The view-model behind ``SignIn``: it owns the ``SignInFlow`` and republishes
 /// its step + errors as `@Published` state the view renders. `@MainActor` so the
 /// published mutations are main-thread.
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 @MainActor
 final class SignInModel: ObservableObject {
     @Published var step: SignInStep = .collectIdentifier
@@ -314,6 +551,8 @@ final class SignInModel: ObservableObject {
     @Published var enrollment: MfaEnrollment?
     /// The instance appearance (dashboard design + providers), once loaded.
     @Published var appearanceInfo: AtlasAppearanceInfo?
+    /// The single-use nonce the next Sign in with Apple request carries.
+    @Published var appleNonce: String?
 
     private let session: AtlasAuthSession
     private var flow: SignInFlow
@@ -325,6 +564,9 @@ final class SignInModel: ObservableObject {
         self.appearanceInfo = appearanceInfo
         self.appearanceRequested = appearanceInfo != nil
     }
+
+    /// Whether the instance enables Sign in with Apple.
+    var appleEnabled: Bool { appearanceInfo?.providers.contains("apple") ?? false }
 
     /// Fetch the appearance once. A failure is not an error the user sees: the
     /// form simply keeps its default look.
@@ -356,6 +598,73 @@ final class SignInModel: ObservableObject {
     func confirmEnrollment() async {
         guard let enrollment else { return }
         await drive { try await self.flow.attemptMfaEnrollment(factorId: enrollment.factorId, codes: [self.code]) }
+    }
+
+    /// Mint the nonce for the next Sign in with Apple request (once the
+    /// appearance says Apple is enabled). A failed mint leaves it nil; the
+    /// sign-in then goes ahead unbound, as the server allows.
+    func prepareAppleSignIn() async {
+        await loadAppearance()
+        guard appleEnabled, appleNonce == nil else { return }
+        appleNonce = (try? await session.client.mintNativeNonce(provider: "apple")) ?? nil
+    }
+
+    #if canImport(AuthenticationServices)
+    /// Finish a Sign in with Apple ceremony: post the identity token, then either
+    /// complete or continue to the second factor the server asks for.
+    func completeAppleSignIn(_ result: Result<ASAuthorization, Error>) async {
+        let nonce = appleNonce
+        appleNonce = nil // single-use
+        defer { Task { await self.prepareAppleSignIn() } }
+        switch result {
+        case let .failure(error):
+            if (error as? ASAuthorizationError)?.code == .canceled { return }
+            present(error)
+        case let .success(authorization):
+            guard
+                let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                let token = appleIdentityToken(from: credential.identityToken)
+            else {
+                present(AtlasError.decoding("Apple returned no identity token."))
+                return
+            }
+            await completeIdToken(provider: "apple", idToken: token, nonce: nonce)
+        }
+    }
+    #endif
+
+    /// Post a provider id_token and follow the outcome.
+    func completeIdToken(provider: String, idToken: String, nonce: String?) async {
+        await driveVoid {
+            switch try await self.session.client.signInWithIdToken(provider: provider, idToken: idToken, nonce: nonce) {
+            case .complete:
+                await self.finishSignedIn()
+            case let .needsNextStep(next):
+                self.flow = next
+                self.step = await next.step
+            }
+        }
+    }
+
+    #if canImport(AuthenticationServices) && !os(watchOS)
+    /// Sign in with a passkey (the system sheet). Cancelling the sheet is not an error.
+    @available(iOS 16.0, macOS 12.0, tvOS 17.0, *)
+    func signInWithPasskey() async {
+        await driveVoid {
+            do {
+                _ = try await self.session.client.signInWithPasskey()
+                await self.finishSignedIn()
+            } catch let error as ASAuthorizationError where error.code == .canceled {
+                return
+            }
+        }
+    }
+    #endif
+
+    private func finishSignedIn() async {
+        step = .done(sessionId: nil)
+        completed = true
+        await session.reload()
     }
 
     /// Publish an error: the server's own message verbatim (it is written for end
@@ -396,9 +705,15 @@ final class SignInModel: ObservableObject {
 
 /// A compact signed-in-user control: avatar + name with a sign-out action — the
 /// `<UserButton>` equivalent. Renders nothing when signed out.
-@available(iOS 15.0, macOS 12.0, *)
+///
+/// A pull-down menu on iOS, macOS, visionOS and tvOS; on watchOS (which has no
+/// menus) the row opens the system confirmation sheet with the sign-out action.
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 public struct UserButton: View {
     @ObservedObject private var session: AtlasAuthSession
+    #if os(watchOS)
+    @State private var confirmingSignOut = false
+    #endif
 
     public init(session: AtlasAuthSession) {
         _session = ObservedObject(wrappedValue: session)
@@ -406,15 +721,35 @@ public struct UserButton: View {
 
     public var body: some View {
         if let user = session.user {
+            #if os(watchOS)
+            Button { confirmingSignOut = true } label: { accountLabel(user) }
+                .confirmationDialog(displayName(user), isPresented: $confirmingSignOut, titleVisibility: .visible) {
+                    Button("Sign out", role: .destructive) { Task { await session.signOut() } }
+                }
+            #else
             Menu {
                 Button("Sign out", role: .destructive) { Task { await session.signOut() } }
             } label: {
-                HStack(spacing: 8) {
-                    avatar(user)
-                    Text(displayName(user)).lineLimit(1)
-                }
+                accountLabel(user)
             }
+            #endif
         }
+    }
+
+    @ViewBuilder private func accountLabel(_ user: AtlasUser) -> some View {
+        HStack(spacing: 8) {
+            avatar(user)
+            Text(displayName(user)).lineLimit(1)
+        }
+    }
+
+    /// The avatar's diameter: tvOS controls are read from the sofa.
+    private var avatarSize: Double {
+        #if os(tvOS)
+        return 56
+        #else
+        return 28
+        #endif
     }
 
     @ViewBuilder private func avatar(_ user: AtlasUser) -> some View {
@@ -424,10 +759,10 @@ public struct UserButton: View {
             } placeholder: {
                 Circle().fill(Color.secondary.opacity(0.3))
             }
-            .frame(width: 28, height: 28)
+            .frame(width: avatarSize, height: avatarSize)
             .clipShape(Circle())
         } else {
-            Circle().fill(Color.secondary.opacity(0.3)).frame(width: 28, height: 28)
+            Circle().fill(Color.secondary.opacity(0.3)).frame(width: avatarSize, height: avatarSize)
         }
     }
 
@@ -440,7 +775,7 @@ public struct UserButton: View {
 /// A read-oriented account screen: identity, email addresses, and a sign-out
 /// button — the `<UserProfile>` equivalent. A starting point to extend with the
 /// `/me` mutation methods.
-@available(iOS 15.0, macOS 12.0, *)
+@available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 public struct UserProfile: View {
     @ObservedObject private var session: AtlasAuthSession
 
@@ -450,30 +785,37 @@ public struct UserProfile: View {
 
     public var body: some View {
         if let user = session.user {
-            VStack(alignment: .leading, spacing: 12) {
-                Text([user.firstName, user.lastName].compactMap { $0 }.joined(separator: " ").nonEmpty
-                     ?? user.username ?? "Account")
-                    .font(.title3).bold()
-
-                if let emails = user.emailAddresses, !emails.isEmpty {
-                    Text("Email addresses").font(.headline)
-                    ForEach(emails, id: \.id) { email in
-                        HStack {
-                            Text(email.emailAddress)
-                            if email.primary { Text("primary").font(.caption).foregroundColor(.secondary) }
-                            if email.verified { Image(systemName: "checkmark.seal.fill").foregroundColor(.green) }
-                        }
-                    }
-                }
-
-                Button("Sign out", role: .destructive) { Task { await session.signOut() } }
-                if let error = session.error {
-                    Text(error.message).font(.footnote).foregroundColor(.red)
-                }
-            }
-            .padding()
+            #if os(watchOS)
+            ScrollView { details(user) }
+            #else
+            details(user).padding()
+            #endif
         } else {
             Text("Not signed in.").padding()
+        }
+    }
+
+    @ViewBuilder private func details(_ user: AtlasUser) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text([user.firstName, user.lastName].compactMap { $0 }.joined(separator: " ").nonEmpty
+                 ?? user.username ?? "Account")
+                .font(.title3).bold()
+
+            if let emails = user.emailAddresses, !emails.isEmpty {
+                Text("Email addresses").font(.headline)
+                ForEach(emails, id: \.id) { email in
+                    HStack {
+                        Text(email.emailAddress)
+                        if email.primary { Text("primary").font(.caption).foregroundColor(.secondary) }
+                        if email.verified { Image(systemName: "checkmark.seal.fill").foregroundColor(.green) }
+                    }
+                }
+            }
+
+            Button("Sign out", role: .destructive) { Task { await session.signOut() } }
+            if let error = session.error {
+                Text(error.message).font(.footnote).foregroundColor(.red)
+            }
         }
     }
 }

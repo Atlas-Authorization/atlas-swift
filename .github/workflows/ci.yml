@@ -1,0 +1,51 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build (macOS)
+        run: swift build
+      - name: Test (macOS)
+        run: swift test
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build for iOS (device)
+        run: xcodebuild build -scheme Atlas -destination 'generic/platform=iOS' -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO
+      - name: Test on the iOS simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          xcodebuild test -scheme Atlas -destination "id=$UDID" CODE_SIGNING_ALLOWED=NO
+  other-platforms:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        destination: ['generic/platform=tvOS', 'generic/platform=watchOS']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: xcodebuild build -scheme Atlas -destination '${{ matrix.destination }}' CODE_SIGNING_ALLOWED=NO
+  tvos-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test on the tvOS simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'tvOS' in k for x in v))")
+          xcodebuild test -scheme Atlas -destination "id=$UDID" CODE_SIGNING_ALLOWED=NO
+  watchos-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test on the watchOS simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'watchOS' in k for x in v))")
+          xcodebuild test -scheme Atlas -destination "id=$UDID" CODE_SIGNING_ALLOWED=NO

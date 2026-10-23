@@ -112,9 +112,9 @@ extension AtlasClient {
     }
 }
 
-// MARK: - Sign in with Apple helper (Apple platforms, OS-version gated)
+// MARK: - Sign in with Apple helper (every Apple platform: iOS, macOS, tvOS, watchOS, visionOS)
 
-#if canImport(AuthenticationServices) && !os(watchOS) && !os(tvOS)
+#if canImport(AuthenticationServices)
 import AuthenticationServices
 #if canImport(UIKit)
 import UIKit
@@ -126,7 +126,7 @@ import AppKit
 /// the JWT to post via ``AtlasClient/signInWithIdToken(provider:idToken:nonce:)``
 /// with `provider: "apple"`. The profile fields are present only on the FIRST
 /// sign-in for this Apple ID (Apple never resends them) — persist them then.
-@available(iOS 13.0, macOS 10.15, *)
+@available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
 public struct AppleSignInResult: Sendable {
     public let identityToken: String
     public let authorizationCode: String?
@@ -138,7 +138,7 @@ public struct AppleSignInResult: Sendable {
 /// A small `async/await` wrapper over `ASAuthorizationController` for a
 /// "Sign in with Apple" request. Create it, call ``signIn(nonce:)``, post the
 /// returned `identityToken`. A single ceremony — run once and discarded.
-@available(iOS 13.0, macOS 10.15, *)
+@available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
 public final class SignInWithApple: NSObject {
     private var continuation: CheckedContinuation<ASAuthorizationCredential, Error>?
     private var controller: ASAuthorizationController?
@@ -162,7 +162,10 @@ public final class SignInWithApple: NSObject {
             self.continuation = c
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
+            #if !os(watchOS)
+            // watchOS presents the Apple ID sheet itself; there is no anchor to supply.
             controller.presentationContextProvider = self
+            #endif
             self.controller = controller
             controller.performRequests()
         }
@@ -190,7 +193,7 @@ public final class SignInWithApple: NSObject {
     }
 }
 
-@available(iOS 13.0, macOS 10.15, *)
+@available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
 extension SignInWithApple: ASAuthorizationControllerDelegate {
     public func authorizationController(
         controller: ASAuthorizationController,
@@ -207,7 +210,8 @@ extension SignInWithApple: ASAuthorizationControllerDelegate {
     }
 }
 
-@available(iOS 13.0, macOS 10.15, *)
+#if !os(watchOS)
+@available(iOS 13.0, macOS 10.15, tvOS 13.0, *)
 extension SignInWithApple: ASAuthorizationControllerPresentationContextProviding {
     public func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
         #if canImport(UIKit)
@@ -221,4 +225,5 @@ extension SignInWithApple: ASAuthorizationControllerPresentationContextProviding
         #endif
     }
 }
+#endif
 #endif

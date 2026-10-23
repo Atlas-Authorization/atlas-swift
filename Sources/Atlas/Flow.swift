@@ -95,13 +95,39 @@ public func isTerminal(_ attempt: SignInAttempt) -> Bool {
 /// exactly once — there is deliberately no endpoint that reveals it again.
 public struct MfaEnrollment: Decodable, Sendable, Equatable {
     public let factorId: String
+    /// `totp` or `phone_code`.
+    public let strategy: String
+    /// totp: the setup key (shown once); empty for a texted factor.
     public let secret: String
-    /// The `otpauth://` provisioning URI, for rendering a QR code.
+    /// totp: the `otpauth://` provisioning URI; empty for a texted factor.
     public let uri: String
+    /// totp: the URI as a QR image (a `data:image/...` URL), when the server sends one.
+    public let qrCode: String?
+    /// phone_code: the (masked) number the code was texted to.
+    public let phone: String?
 
     enum CodingKeys: String, CodingKey {
         case factorId = "factor_id"
-        case secret, uri
+        case strategy, secret, uri, phone
+        case qrCode = "qr_code"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        factorId = try c.decode(String.self, forKey: .factorId)
+        strategy = try c.decodeIfPresent(String.self, forKey: .strategy) ?? "totp"
+        secret = try c.decodeIfPresent(String.self, forKey: .secret) ?? ""
+        uri = try c.decodeIfPresent(String.self, forKey: .uri) ?? ""
+        let qr = try c.decodeIfPresent(String.self, forKey: .qrCode)
+        // Only an image URL a view can render safely.
+        qrCode = (qr?.hasPrefix("data:image/") ?? false) ? qr : nil
+        phone = try c.decodeIfPresent(String.self, forKey: .phone)
+    }
+
+    /// The QR image bytes decoded from ``qrCode``, if any.
+    public var qrImageData: Data? {
+        guard let qrCode, let comma = qrCode.firstIndex(of: ",") else { return nil }
+        return Data(base64Encoded: String(qrCode[qrCode.index(after: comma)...]))
     }
 }
 
@@ -220,11 +246,34 @@ public actor SignInFlow {
     }
 
     /// Begin TOTP enrollment mid-sign-in (§11.1, `needs_mfa_enrollment`). The
-    /// returned ``MfaEnrollment`` carries the secret + provisioning URI (shown once).
+    /// returned ``MfaEnrollment`` carries the secret + provisioning URI (shown once)
+    /// and, from servers that send one, the QR image (``MfaEnrollment/qrCode``).
     public func prepareMfaEnrollment() async throws -> MfaEnrollment {
+        try await prepareMfaEnrollment(json: ["strategy": "totp"])
+    }
+
+    /// Begin SMS enrollment mid-sign-in: the server registers `phone` (E.164) and
+    /// texts it a code; confirm with ``attemptMfaEnrollment(factorId:code:)``.
+    /// Offered only where the instance has the SMS factor on and can text.
+    public func prepareSmsMfaEnrollment(phone: String) async throws -> MfaEnrollment {
+        try await prepareMfaEnrollment(json: ["strategy": "phone_code", "phone": phone])
+    }
+
+    /// Confirm an SMS enrollment with the texted code. Completing it finishes the
+    /// sign-in (and returns the backup codes via ``lastBackupCodes``).
+    @discardableResult
+    public func attemptMfaEnrollment(factorId: String, code: String) async throws -> SignInStep {
+        try await postToAttempt(
+            "attempt_mfa_enrollment",
+            ["factor_id": factorId, "code": code],
+            captureBackupCodes: true
+        )
+    }
+
+    private func prepareMfaEnrollment(json: [String: Any]) async throws -> MfaEnrollment {
         guard let id = attempt?.id else { throw AtlasError.notSignedIn }
         let (data, response) = try await client.sendJSON(
-            "POST", "/v1/client/sign_ins/\(id)/prepare_mfa_enrollment", json: [:], refreshCookie: nil
+            "POST", "/v1/client/sign_ins/\(id)/prepare_mfa_enrollment", json: json, refreshCookie: nil
         )
         try client.throwIfError(status: response.statusCode, data: data)
         return try client.decode(MfaEnrollment.self, from: data)

@@ -143,7 +143,7 @@ public func exchangeForSession(
     ]).utf8)
 
     guard
-        let (data, response) = try? await urlSession.data(for: request),
+        let (data, response) = try? await AtlasHTTP.data(for: request, session: urlSession),
         is2xx(response),
         let body = try? JSONDecoder().decode(TokenExchangeResponse.self, from: data),
         // A session is only a session if it carries both the JWT and the id the
@@ -184,7 +184,7 @@ public func refreshNativeSession(
     request.httpBody = try? JSONSerialization.data(withJSONObject: ["refresh_token": refreshToken])
 
     guard
-        let (data, response) = try? await urlSession.data(for: request),
+        let (data, response) = try? await AtlasHTTP.data(for: request, session: urlSession),
         is2xx(response),
         let body = try? JSONDecoder().decode(SessionTokensResponse.self, from: data),
         let jwt = body.jwt

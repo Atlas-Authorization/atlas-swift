@@ -1,4 +1,5 @@
 import Foundation
+@testable import Atlas
 
 /// A `URLProtocol` that answers requests from an in-memory queue — no network,
 /// fully deterministic. Each registered handler sees the outgoing request (so a
@@ -9,6 +10,8 @@ final class MockURLProtocol: URLProtocol {
         let status: Int
         let headers: [String: String]
         let body: Data
+        /// When set, the request fails with this error instead of answering.
+        var failure: URLError? = nil
     }
 
     /// Every request the session made, in order — the mutation-check surface.
@@ -31,6 +34,11 @@ final class MockURLProtocol: URLProtocol {
         stubs.append(Stub(status: status, headers: merged, body: Data(json.utf8)))
     }
 
+    /// Queue a network failure (the request never gets a response).
+    static func enqueueFailure(_ code: URLError.Code = .networkConnectionLost) {
+        stubs.append(Stub(status: 0, headers: [:], body: Data(), failure: URLError(code)))
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
@@ -43,6 +51,10 @@ final class MockURLProtocol: URLProtocol {
             return
         }
         let stub = MockURLProtocol.stubs.removeFirst()
+        if let failure = stub.failure {
+            client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: stub.status,
@@ -80,6 +92,28 @@ final class MockURLProtocol: URLProtocol {
         configuration.protocolClasses = [MockURLProtocol.self]
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
-        return URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration)
+        #if os(watchOS)
+        // watchOS never consults a configuration's URLProtocol classes, so the
+        // same queue answers in memory through the SDK's transport seam.
+        AtlasHTTP.register(session) { request in try respond(to: request) }
+        #endif
+        return session
+    }
+
+    /// The in-memory twin of `startLoading`: record the request, pop the next stub.
+    static func respond(to request: URLRequest) throws -> (Data, URLResponse) {
+        recorded.append(request)
+        recordedBodies.append(bodyData(of: request))
+        guard !stubs.isEmpty else { throw URLError(.resourceUnavailable) }
+        let stub = stubs.removeFirst()
+        if let failure = stub.failure { throw failure }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: stub.status,
+            httpVersion: "HTTP/1.1",
+            headerFields: stub.headers
+        )!
+        return (stub.body, response)
     }
 }

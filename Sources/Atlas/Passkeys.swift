@@ -130,6 +130,12 @@ func registrationFinishBody(
     return body
 }
 
+/// The passkey sign-in `begin` body: the captcha token when there is one.
+func passkeySignInBeginBody(captchaToken: String?) -> [String: String] {
+    guard let captchaToken, !captchaToken.isEmpty else { return [:] }
+    return ["captcha_token": captchaToken]
+}
+
 /// Map a sign-in `begin` handle/challenge + assertion to the `/finish` body.
 func assertionFinishBody(
     handle: String,
@@ -299,15 +305,19 @@ extension AtlasClient {
     /// `__atlas_rt` refresh token are persisted to the ``TokenStore``, exactly as
     /// a password sign-in does, and the signed-in user is returned.
     ///
+    /// - Parameter captchaToken: the sign-in captcha token, when the instance
+    ///   challenges sign-ins. Without one such an instance answers 400
+    ///   `CAPTCHA_REQUIRED` (``AtlasError/isCaptchaRequired``): run the captcha
+    ///   and call again with its token.
     /// - Returns: the freshly signed-in ``AtlasUser``.
     /// - Throws: ``AtlasError`` on an API failure; the platform
     ///   `ASAuthorizationError` if the system ceremony fails or is cancelled.
     @available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
     @discardableResult
-    public func signInWithPasskey() async throws -> AtlasUser {
+    public func signInWithPasskey(captchaToken: String? = nil) async throws -> AtlasUser {
         let (beginData, beginResponse) = try await send(
             "POST", "/v1/client/sign_ins/passkey/begin",
-            body: [:], refreshCookie: nil
+            body: passkeySignInBeginBody(captchaToken: captchaToken), refreshCookie: nil
         )
         try throwIfError(status: beginResponse.statusCode, data: beginData)
         let options = try decode(PasskeyAuthenticationOptions.self, from: beginData)
@@ -350,5 +360,147 @@ extension AtlasClient {
 
         return try await currentUser()
     }
+
+    /// Create an account whose only credential is a passkey: run
+    /// ``PasskeySignUpFlow/start(email:username:fields:consent:captchaToken:)``
+    /// first (and, when the instance requires it, verify the email), then call
+    /// this once ``PasskeySignUpFlow/awaitingPasskey`` is true. It runs
+    /// `sign_ups/:id/passkey/begin` → the system ceremony → `…/finish`; the
+    /// account exists only once the passkey verifies, and the session is persisted.
+    @available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
+    @discardableResult
+    public func createSignUpPasskey(_ flow: PasskeySignUpFlow, name: String? = nil) async throws -> SignInStep {
+        let (id, pollSecret) = try await flow.passkeyContext()
+        let (beginData, beginResponse) = try await send(
+            "POST", "/v1/client/sign_ups/\(id)/passkey/begin",
+            body: ["poll_secret": pollSecret], refreshCookie: nil
+        )
+        try throwIfError(status: beginResponse.statusCode, data: beginData)
+        let options = try decode(PasskeyRegistrationOptions.self, from: beginData)
+        guard
+            let challenge = Data(base64URLEncoded: options.challenge),
+            let userID = Data(base64URLEncoded: options.user.id)
+        else {
+            throw AtlasError.decoding("The passkey registration options were not valid base64url.")
+        }
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: options.rp.id)
+        let request = provider.createCredentialRegistrationRequest(
+            challenge: challenge, name: options.user.name, userID: userID
+        )
+        let credential = try await PasskeyCeremony().perform(request)
+        guard let registration = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
+            throw AtlasError.decoding("The authenticator returned an unexpected credential type.")
+        }
+        let result = PasskeyRegistrationResult(
+            attestationObject: registration.rawAttestationObject ?? Data(),
+            clientDataJSON: registration.rawClientDataJSON
+        )
+        return try await flow.finish(
+            signUpPasskeyFinishBody(pollSecret: pollSecret, challenge: options.challenge, result: result, name: name)
+        )
+    }
 }
 #endif
+
+// MARK: - passkey-only sign-up (platform-independent half)
+
+/// The `sign_ups/:id/passkey/finish` body: the registration plus the attempt's
+/// `poll_secret`.
+func signUpPasskeyFinishBody(
+    pollSecret: String,
+    challenge: String,
+    result: PasskeyRegistrationResult,
+    name: String?
+) -> [String: String] {
+    var body = registrationFinishBody(challenge: challenge, result: result, name: name)
+    body["poll_secret"] = pollSecret
+    return body
+}
+
+/// A passkey-only sign-up (`POST /v1/client/sign_ups/passkey`): the server runs
+/// every sign-up gate and records the account it will create — no user exists
+/// until the passkey is registered (``AtlasClient/createSignUpPasskey(_:name:)``),
+/// so abandoning midway leaves nothing behind.
+public actor PasskeySignUpFlow {
+    private let client: AtlasClient
+    private var attempt: SignInAttempt?
+    private var pollSecret: String?
+
+    public init(client: AtlasClient) { self.client = client }
+
+    public var step: SignInStep {
+        guard let attempt else { return .collectIdentifier }
+        return signInStep(attempt)
+    }
+    public var attemptId: String? { attempt?.id }
+
+    /// True once the attempt waits for its passkey (`needs_first_factor` with
+    /// `passkey` among the supported first factors).
+    public var awaitingPasskey: Bool {
+        guard let attempt else { return false }
+        return attempt.status == "needs_first_factor" && (attempt.supportedFirstFactors ?? []).contains("passkey")
+    }
+
+    /// Start the sign-up. `email` is collected when the instance's passkey
+    /// sign-up asks for one; `captchaToken` when it requires a captcha.
+    @discardableResult
+    public func start(
+        email: String? = nil,
+        username: String? = nil,
+        fields: [String: String]? = nil,
+        consent: Bool? = nil,
+        captchaToken: String? = nil
+    ) async throws -> SignInStep {
+        var body: [String: Any] = [:]
+        if let email, !email.isEmpty { body["email"] = email }
+        if let username, !username.isEmpty { body["username"] = username }
+        if let fields, !fields.isEmpty { body["fields"] = fields }
+        if consent == true { body["consent"] = true }
+        if let captchaToken, !captchaToken.isEmpty { body["captcha_token"] = captchaToken }
+        let (data, response) = try await client.sendJSON("POST", "/v1/client/sign_ups/passkey", json: body, refreshCookie: nil)
+        try client.throwIfError(status: response.statusCode, data: data)
+        pollSecret = (try? client.decode(PollSecretEnvelope.self, from: data))?.pollSecret
+        return try await apply(data)
+    }
+
+    /// Submit the emailed verification code (when the instance requires a verified email).
+    @discardableResult
+    public func attemptVerification(code: String) async throws -> SignInStep {
+        guard let id = attempt?.id else { throw AtlasError.notSignedIn }
+        let (data, response) = try await client.sendJSON(
+            "POST", "/v1/client/sign_ups/\(id)/attempt_verification", json: ["code": code], refreshCookie: nil
+        )
+        try client.throwIfError(status: response.statusCode, data: data)
+        return try await apply(data)
+    }
+
+    func passkeyContext() throws -> (String, String) {
+        guard let id = attempt?.id, let pollSecret else {
+            throw AtlasError.decoding("This sign-up cannot create a passkey (start it first).")
+        }
+        return (id, pollSecret)
+    }
+
+    func finish(_ body: [String: String]) async throws -> SignInStep {
+        guard let id = attempt?.id else { throw AtlasError.notSignedIn }
+        let (data, response) = try await client.sendJSON(
+            "POST", "/v1/client/sign_ups/\(id)/passkey/finish", json: body, refreshCookie: nil
+        )
+        try client.throwIfError(status: response.statusCode, data: data)
+        return try await apply(data)
+    }
+
+    private func apply(_ data: Data) async throws -> SignInStep {
+        let decoded = try client.decode(SignInAttempt.self, from: data)
+        attempt = decoded
+        if decoded.isComplete, let ticket = decoded.ticket {
+            try await client.exchangeTicket(attemptId: decoded.id, ticket: ticket)
+        }
+        return signInStep(decoded)
+    }
+}
+
+struct PollSecretEnvelope: Decodable {
+    let pollSecret: String?
+    enum CodingKeys: String, CodingKey { case pollSecret = "poll_secret" }
+}

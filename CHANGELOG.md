@@ -2,6 +2,51 @@
 
 All notable changes to the Atlas Swift SDK. The package is versioned by git tag.
 
+## 0.6.0 — 2026-10-23
+
+### Added
+
+- **Sign in on another device (RFC 8628).** `AtlasClient.startDeviceSignIn(clientId:scopes:)`
+  (`POST /oauth2/device_authorization`) returns an `AtlasDeviceAuthorization`
+  (`userCode`, `verificationURI`, `verificationURIComplete`, `expiresIn`,
+  `interval`, `expiresAt`, `secondsRemaining(at:)`, `qrCodeURL`,
+  `displayVerificationURI`). `waitForDeviceSignIn(_:deviceName:)` polls
+  `/oauth2/token` (authorization_pending, slow_down +5 s, exponential backoff on
+  network failure capped at 60 s, local expiry), exchanges the approved access
+  token for an Atlas session, persists it and returns the user. Typed outcomes:
+  `AtlasError.isDeviceCodeExpired`, `isDeviceSignInDenied`; the OAuth error code
+  and description map onto `AtlasError`. `AtlasClient(oauthClientId:)` configures
+  the first-party client; `AtlasClient.platformDeviceName` names the device.
+- **`AtlasDeviceSignInView`.** The device flow as SwiftUI: large code, QR code,
+  verification address, countdown, automatic renewal of expired codes, retry
+  after denial; native layouts for tvOS, watchOS and the rest; dashboard design.
+- **`AtlasQRCode` / `AtlasQRCodeView`.** QR codes drawn as vector modules: Core
+  Image's `CIQRCodeGenerator` where available, a pure-Swift ISO/IEC 18004
+  encoder (byte mode, versions 1–40, all four error-correction levels, penalty
+  mask selection) on watchOS.
+- **Native tvOS and watchOS `SignIn`.** tvOS: sign in on another device beside
+  sign in on this TV (passkey, Sign in with Apple, the email form), each a focus
+  section, with focus lift on design-styled buttons and fields and the design at
+  TV scale. watchOS: sign in on another device, then Sign in with Apple, the email
+  form on request. TOTP enrolment shows a QR code on both.
+- **Sign in with Apple on tvOS and watchOS.** `SignInWithApple` now builds for
+  tvOS 13+ and watchOS 6+ (the watch presents the Apple ID sheet itself).
+
+- **Device id on account-creating starts.** Email sign-up and the social / SSO / id_token sign-in starts carry a stable, random `device_id` (`DeviceId`, kept in `UserDefaults`) for the instance's accounts-per-device abuse limit, like the JS SDK. `AtlasClient.deviceIdProvider` overrides it (return nil to send none).
+- **Passkey sign-in captcha.** `signInWithPasskey(captchaToken:)` forwards the sign-in captcha token; an instance that challenges sign-ins answers `CAPTCHA_REQUIRED` without one (`AtlasError.isCaptchaRequired`, `AtlasErrorCode.captchaRequired` / `.captchaFailed` / `.challengeUnavailable`).
+- **Passkey-only sign-up.** `PasskeySignUpFlow` (`POST /v1/client/sign_ups/passkey`, email verification when required, `awaitingPasskey`) and `AtlasClient.createSignUpPasskey(_:name:)` (begin → system ceremony → finish). The account exists only once the passkey is registered.
+- **SMS MFA enrolment mid-sign-in.** `SignInFlow.prepareSmsMfaEnrollment(phone:)` and `attemptMfaEnrollment(factorId:code:)`. `MfaEnrollment` carries `strategy`, `phone`, and for TOTP the QR image `qrCode` (a `data:image/...` URL) with `qrImageData`.
+- **Organization audit log.** `organizationAuditLog(organizationId:limit:startingAfter:action:)` (`GET /v1/client/organizations/:id/audit_logs`, organization admins).
+
+### Changed
+
+- The prebuilt SwiftUI types are available on **tvOS 17+ and watchOS 10+** (were
+  iOS/macOS/visionOS only); they use the platform's own `Menu`, materials and
+  field styles there. iOS, macOS and visionOS layouts are unchanged. The core
+  client's deployment targets are unchanged.
+- `UserButton` on watchOS opens the system confirmation sheet with "Sign out"
+  (watchOS has no menus).
+
 ## 0.5.0
 
 ### Added
