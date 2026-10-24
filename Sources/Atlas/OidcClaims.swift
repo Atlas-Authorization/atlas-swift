@@ -60,6 +60,10 @@ public struct OidcClaims: Sendable, Equatable {
     public let orgPermissions: [String]
     public let orgs: [OidcOrganization]
     public let sso: OidcSso?
+    /// `sso_organization_id`: the Atlas organization that owns the enterprise SSO connection (independent of `org_id`; absent on a non-SSO or instance-wide connection).
+    public let ssoOrganizationId: String?
+    /// `sso_connection_type`: `saml` or `oidc`; absent on a non-SSO sign-in.
+    public let ssoConnectionType: String?
 
     public init(
         orgId: String? = nil,
@@ -67,7 +71,9 @@ public struct OidcClaims: Sendable, Equatable {
         orgRole: String? = nil,
         orgPermissions: [String] = [],
         orgs: [OidcOrganization] = [],
-        sso: OidcSso? = nil
+        sso: OidcSso? = nil,
+        ssoOrganizationId: String? = nil,
+        ssoConnectionType: String? = nil
     ) {
         self.orgId = orgId
         self.orgSlug = orgSlug
@@ -75,6 +81,8 @@ public struct OidcClaims: Sendable, Equatable {
         self.orgPermissions = orgPermissions
         self.orgs = orgs
         self.sso = sso
+        self.ssoOrganizationId = ssoOrganizationId
+        self.ssoConnectionType = ssoConnectionType
     }
 
     /// Read the claims off a decoded claims object (userinfo, introspection, or a
@@ -114,7 +122,9 @@ public struct OidcClaims: Sendable, Equatable {
             orgRole: string("org_role"),
             orgPermissions: permissions,
             orgs: orgs,
-            sso: sso
+            sso: sso,
+            ssoOrganizationId: string("sso_organization_id"),
+            ssoConnectionType: string("sso_connection_type")
         )
     }
 

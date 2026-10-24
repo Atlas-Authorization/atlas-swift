@@ -131,7 +131,7 @@ final class IntegrationsTests: XCTestCase {
     }
 
     func testOidcClaimsReadOrgAndSsoClaims() throws {
-        let json = #"{"org_id":"org_1","org_slug":"acme","org_role":"admin","org_permissions":["a:b","c:d"],"orgs":[{"id":"org_1","slug":"acme","role":"admin"},{"id":"org_2","slug":"b","role":"member"},{"slug":"skipped"}],"sso_connection_id":"sso_9","sso_tenant_id":"tid","sso_issuer":"https://login.example","sso_domain":"acme.com"}"#
+        let json = #"{"org_id":"org_1","org_slug":"acme","org_role":"admin","org_permissions":["a:b","c:d"],"orgs":[{"id":"org_1","slug":"acme","role":"admin"},{"id":"org_2","slug":"b","role":"member"},{"slug":"skipped"}],"sso_connection_id":"sso_9","sso_tenant_id":"tid","sso_issuer":"https://login.example","sso_domain":"acme.com","sso_organization_id":"org_7","sso_connection_type":"saml"}"#
         let claims = OidcClaims(claims: try JSONDecoder().decode([String: JSONValue].self, from: Data(json.utf8)))
         XCTAssertEqual(claims.orgId, "org_1")
         XCTAssertEqual(claims.orgRole, "admin")
@@ -140,9 +140,13 @@ final class IntegrationsTests: XCTestCase {
         XCTAssertEqual(claims.orgs[1].role, "member")
         XCTAssertEqual(claims.sso?.connectionId, "sso_9")
         XCTAssertEqual(claims.sso?.domain, "acme.com")
+        XCTAssertEqual(claims.ssoOrganizationId, "org_7")
+        XCTAssertEqual(claims.ssoConnectionType, "saml")
         let none = OidcClaims(claims: ["sub": .string("u")])
         XCTAssertNil(none.orgId)
         XCTAssertNil(none.sso)
+        XCTAssertNil(none.ssoOrganizationId)
+        XCTAssertNil(none.ssoConnectionType)
         XCTAssertTrue(none.orgs.isEmpty)
     }
 
