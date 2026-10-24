@@ -12,12 +12,36 @@ public struct AtlasErrorItem: Codable, Sendable, Equatable {
     /// Structured detail some errors carry (e.g. `POLICY_ACCEPTANCE_REQUIRED`
     /// names the policies to show in `meta.policies`).
     public let meta: JSONValue?
+    /// `ROUTE_NOT_FOUND` only: the closest documented paths.
+    public let didYouMean: [String]?
+    /// `ROUTE_NOT_FOUND` only: the methods the path does support.
+    public let allowedMethods: [String]?
+    /// Where the error code is documented (`https://atlasauth.net/errors/<code>`).
+    public let docsUrl: String?
 
-    public init(code: String, message: String, param: String? = nil, meta: JSONValue? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case code, message, param, meta
+        case didYouMean = "did_you_mean"
+        case allowedMethods = "allowed_methods"
+        case docsUrl = "docs_url"
+    }
+
+    public init(
+        code: String,
+        message: String,
+        param: String? = nil,
+        meta: JSONValue? = nil,
+        didYouMean: [String]? = nil,
+        allowedMethods: [String]? = nil,
+        docsUrl: String? = nil
+    ) {
         self.code = code
         self.message = message
         self.param = param
         self.meta = meta
+        self.didYouMean = didYouMean
+        self.allowedMethods = allowedMethods
+        self.docsUrl = docsUrl
     }
 }
 
@@ -70,6 +94,43 @@ public enum AtlasError: Error, Sendable {
         return list.compactMap(PolicyProblem.init(json:))
     }
 
+    /// 403 `INSUFFICIENT_SCOPE`: the key or token lacks a scope. The older
+    /// `SCOPE_MISSING` spelling is still tolerated. ``requiredScope`` names the scope.
+    public var isInsufficientScope: Bool {
+        knownCode == .insufficientScope || knownCode == .scopeMissing
+    }
+
+    /// The scope an `INSUFFICIENT_SCOPE` refusal asks for (`meta.required_scope`); nil otherwise.
+    public var requiredScope: String? {
+        guard case let .api(_, errors) = self else { return nil }
+        for item in errors {
+            if case let .object(meta)? = item.meta, case let .string(scope)? = meta["required_scope"] {
+                return scope
+            }
+        }
+        return nil
+    }
+
+    /// 403 `STEP_UP_REQUIRED`: a recent re-authentication (MFA) is needed; run it and retry.
+    public var isStepUpRequired: Bool { knownCode == .stepUpRequired }
+
+    /// 403 `ORIGIN_NOT_ALLOWED`: the request came from an origin the key or app does not allow.
+    public var isOriginNotAllowed: Bool { knownCode == .originNotAllowed }
+
+    /// 404 `ROUTE_NOT_FOUND`: no such method + path (a missing object is `NOT_FOUND`).
+    public var isRouteNotFound: Bool { knownCode == .routeNotFound }
+
+    /// `ROUTE_NOT_FOUND`: the closest documented paths; empty for any other error.
+    public var didYouMean: [String] { routeNotFoundItem?.didYouMean ?? [] }
+
+    /// `ROUTE_NOT_FOUND`: the methods the path does support; empty for any other error.
+    public var allowedMethods: [String] { routeNotFoundItem?.allowedMethods ?? [] }
+
+    private var routeNotFoundItem: AtlasErrorItem? {
+        guard case let .api(_, errors) = self else { return nil }
+        return errors.first { $0.code == AtlasErrorCode.routeNotFound.rawValue }
+    }
+
     /// The HTTP status for an `.api` error; nil for local/transport failures.
     public var status: Int? {
         if case let .api(status, _) = self { return status }
@@ -119,6 +180,16 @@ public enum AtlasErrorCode: String, Sendable, CaseIterable {
     /// 422 — a required policy (terms of service, privacy, …) was not accepted in
     /// the sign-up, or its version is stale. ``AtlasError/policyProblems`` says which.
     case policyAcceptanceRequired = "POLICY_ACCEPTANCE_REQUIRED"
+    /// 403 — the key or token lacks a scope; `meta.required_scope` names it.
+    case insufficientScope = "INSUFFICIENT_SCOPE"
+    /// The pre-2026-10 spelling of ``insufficientScope``; still tolerated.
+    case scopeMissing = "SCOPE_MISSING"
+    /// 403 — the request origin is not one the key or app allows.
+    case originNotAllowed = "ORIGIN_NOT_ALLOWED"
+    /// 403 — a recent MFA / re-authentication is required first.
+    case stepUpRequired = "STEP_UP_REQUIRED"
+    /// 404 — no such method + path; carries `did_you_mean` / `allowed_methods`.
+    case routeNotFound = "ROUTE_NOT_FOUND"
 }
 
 extension AtlasError: LocalizedError {

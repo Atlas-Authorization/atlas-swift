@@ -300,7 +300,8 @@ public final class AtlasClient: @unchecked Sendable {
         _ path: String,
         json: [String: Any]?,
         refreshCookie: String?,
-        authorization: String? = nil
+        authorization: String? = nil,
+        extraHeaders: [String: String] = [:]
     ) async throws -> (Data, HTTPURLResponse) {
         // `appendingPathComponent` would percent-escape a query string, so a path
         // carrying one is joined textually (the base never ends in a slash).
@@ -315,6 +316,9 @@ public final class AtlasClient: @unchecked Sendable {
         }
         if let authorization {
             request.setValue("Bearer \(authorization)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         if let json = DeviceId.stamp(json, path: path, method: method, id: deviceIdProvider) {
             request.setValue("application/json", forHTTPHeaderField: "content-type")
