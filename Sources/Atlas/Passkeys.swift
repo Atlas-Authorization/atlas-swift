@@ -346,27 +346,10 @@ extension PasskeyCeremony: ASAuthorizationControllerDelegate {
 @available(iOS 16.0, macOS 12.0, tvOS 16.0, *)
 extension PasskeyCeremony: ASAuthorizationControllerPresentationContextProviding {
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        #if canImport(UIKit)
-        return PasskeyCeremony.activeWindow() ?? ASPresentationAnchor()
-        #elseif canImport(AppKit)
-        return NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
-        #else
-        return ASPresentationAnchor()
-        #endif
+        AtlasPresentationAnchor.current()
     }
 }
 
-#if canImport(UIKit)
-@available(iOS 16.0, tvOS 16.0, *)
-extension PasskeyCeremony {
-    /// Best-effort active window for the system sheet to anchor to.
-    static func activeWindow() -> UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-        return scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
-    }
-}
-#endif
 
 // MARK: - public API
 

@@ -166,6 +166,9 @@ public struct SignIn: View {
         watchBody
         #else
         standardBody
+            #if os(visionOS)
+            .task { await model.prepareAppleSignIn() }
+            #endif
         #endif
     }
 
@@ -187,6 +190,14 @@ public struct SignIn: View {
 
     @ViewBuilder private func content(_ style: AtlasStyle?) -> some View {
         title("Sign in", style)
+        #if os(visionOS)
+        // The Vision Pro has the platform passkey and Sign in with Apple sheets, so the
+        // person can sign in without typing on the virtual keyboard.
+        if case .collectIdentifier = model.step {
+            passkeyButton(style)
+            appleButton(style)
+        }
+        #endif
         stepContent(style)
         status(style)
     }
@@ -271,7 +282,7 @@ public struct SignIn: View {
 
     // MARK: on-device sign-in options (tvOS, watchOS)
 
-    #if os(tvOS)
+    #if os(tvOS) || os(visionOS)
     /// Passkey sign-in on the TV: the system sheet offers a passkey from a nearby
     /// iPhone or iPad (or a QR code to scan) — no typing.
     @ViewBuilder private func passkeyButton(_ style: AtlasStyle?) -> some View {
@@ -281,7 +292,7 @@ public struct SignIn: View {
     }
     #endif
 
-    #if os(tvOS) || os(watchOS)
+    #if os(tvOS) || os(watchOS) || os(visionOS)
     /// The system Sign in with Apple button, shown when the instance enables Apple.
     @ViewBuilder private func appleButton(_ style: AtlasStyle?) -> some View {
         if model.appleEnabled {
@@ -500,6 +511,8 @@ enum AtlasPlatformMetrics {
     static var appleButtonHeight: Double {
         #if os(tvOS)
         return 86
+        #elseif os(visionOS)
+        return 52
         #else
         return 44
         #endif
@@ -881,6 +894,33 @@ public struct UserProfile: View {
         }
     }
 }
+
+#if os(visionOS)
+@available(visionOS 1.0, *)
+extension View {
+    /// Attach the signed-in user's account menu (``UserButton``) to this window as a
+    /// visionOS ornament: a glass capsule floating below the window, the place a
+    /// visionOS app puts persistent controls. Renders nothing while signed out.
+    ///
+    /// - Parameters:
+    ///   - session: the auth session to read the user from.
+    ///   - anchor: where on the window the ornament attaches (bottom by default).
+    public func atlasUserOrnament(
+        session: AtlasAuthSession,
+        anchor: UnitPoint = .bottom
+    ) -> some View {
+        ornament(
+            visibility: session.user == nil ? .hidden : .visible,
+            attachmentAnchor: .scene(anchor)
+        ) {
+            UserButton(session: session)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .glassBackgroundEffect(in: Capsule())
+        }
+    }
+}
+#endif
 
 private extension String {
     /// Self, unless empty/whitespace, in which case nil — for name fallbacks.

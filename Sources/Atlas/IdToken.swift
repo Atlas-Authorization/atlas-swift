@@ -224,15 +224,7 @@ extension SignInWithApple: ASAuthorizationControllerDelegate {
 @available(iOS 13.0, macOS 10.15, tvOS 13.0, *)
 extension SignInWithApple: ASAuthorizationControllerPresentationContextProviding {
     public func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        #if canImport(UIKit)
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-        return scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first ?? ASPresentationAnchor()
-        #elseif canImport(AppKit)
-        return NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
-        #else
-        return ASPresentationAnchor()
-        #endif
+        AtlasPresentationAnchor.current()
     }
 }
 #endif

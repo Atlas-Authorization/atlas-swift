@@ -35,13 +35,15 @@ No third-party dependencies. Requires iOS 13+/macOS 12+ (async/await).
 | Sign in on another device (`startDeviceSignIn` / `waitForDeviceSignIn`) | 13+ | 12+ | 1+ | 13+ | 6+ |
 | Passkeys (`signInWithPasskey`, `registerPasskey`) | 16+ | 12+ | 1+ | 16+ | — (no platform passkey API) |
 | Sign in with Apple (`SignInWithApple`, id_token exchange) | 13+ | 10.15+ | 1+ | 13+ | 6+ |
+| Hosted sign-in in the system web sheet (`signInWithBrowser`, `AtlasWebAuthentication`) | 13+ | 10.15+ | 1+ | — (no browser; use device sign-in) | 6.2+ |
 | Prebuilt SwiftUI (`SignIn`, `UserButton`, `UserProfile`, `AtlasDeviceSignInView`, `AtlasQRCodeView`) | 15+ | 12+ | 1+ | 17+ | 10+ |
 
 What the prebuilt `SignIn` leads with on each platform:
 
 | Platform | Sign-in experience |
 |---|---|
-| iOS, iPadOS, macOS, visionOS | The email form (identifier → password / email code → 2FA), plus social buttons via `onSocialSignIn`. |
+| iOS, iPadOS, macOS | The email form (identifier → password / email code → 2FA), plus social buttons via `onSocialSignIn`. |
+| visionOS | Passkey and Sign in with Apple lead (no typing on the virtual keyboard), then the email form and the social buttons. Design `glass` cards use the system glass material, controls take the eye-tracking hover effect, and `.atlasUserOrnament(session:)` puts the account menu in a window ornament. |
 | tvOS | Two focus sections side by side: **sign in on another device** (code + QR code) and **sign in on this TV** — passkey (the system sheet offers a nearby iPhone/iPad), Sign in with Apple, then the email form. Design-styled controls lift on focus. |
 | watchOS | **Sign in on another device** (QR code + code) first, then Sign in with Apple; the email form is one tap away ("Use email"). |
 

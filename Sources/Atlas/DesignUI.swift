@@ -205,7 +205,8 @@ struct AtlasSecondaryButtonStyle: ButtonStyle {
 
 /// The focus-engine treatment for a design-styled control on tvOS: the focused
 /// control lifts (scale + shadow) the way system buttons do, so the remote's
-/// position is always visible. Other platforms have no focus engine to show.
+/// position is always visible. On visionOS the control takes the system hover
+/// effect for eye tracking. Other platforms have neither to show.
 @available(iOS 15.0, macOS 12.0, tvOS 17.0, watchOS 10.0, *)
 struct AtlasFocusLift: ViewModifier {
     let cornerRadius: Double
@@ -213,6 +214,11 @@ struct AtlasFocusLift: ViewModifier {
     func body(content: Content) -> some View {
         #if os(tvOS)
         AtlasFocusLiftBody(content: content, cornerRadius: cornerRadius)
+        #elseif os(visionOS)
+        // The eye-and-pinch input shows its target with the system hover effect.
+        content
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .hoverEffect()
         #else
         content
         #endif
@@ -307,10 +313,15 @@ struct AtlasCardModifier: ViewModifier {
             switch d.card.style {
             case .none: return AnyView(Color.clear)
             case .glass:
+                #if os(visionOS)
+                // visionOS draws glass itself; a blur material over it would be a stand-in.
+                return AnyView(Color.clear.glassBackgroundEffect(in: shape))
+                #else
                 return AnyView(ZStack {
                     Rectangle().fill(.ultraThinMaterial)
                     p.color(.surface).opacity(systemIsDark ? 0.6 : 0.72)
                 })
+                #endif
             case .solid, .outline: return AnyView(p.color(.surface))
             }
         }()
