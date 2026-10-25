@@ -42,6 +42,13 @@ final class IntegrationsTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.recorded[0].url?.query, "space_id=s%201")
     }
 
+    func testGetTokenSendsThePerCallAudience() async throws {
+        MockURLProtocol.enqueue(status: 200, json: #"{"jwt":"j","expires_in":60,"integration":"acme","audience":"acme:dv 1"}"#)
+        let token = try await makeClient().getToken(for: "acme", cbid: "dv 1", audience: "acme:dv 1", audienceParams: ["tenant": "t2"])
+        XCTAssertEqual(token?.audience, "acme:dv 1")
+        XCTAssertEqual(MockURLProtocol.recorded[0].url?.query, "tenant=t2&cbid=dv%201&audience=acme%3Adv%201")
+    }
+
     func testGetTokenIsNilWhenTheIntegrationIsNotEnabled() async throws {
         MockURLProtocol.enqueue(status: 404, json: #"{"errors":[{"code":"NOT_FOUND","message":"nope"}]}"#)
         let token = try await makeClient().getToken(for: "chatly")

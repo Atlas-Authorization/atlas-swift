@@ -80,6 +80,26 @@ private func integrationEncode(_ value: String) -> String {
     return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
 }
 
+/// The query string for a per-call audience (and any extra parameters), with a
+/// leading `?`, or an empty string when there is nothing to send.
+private func integrationQuery(
+    spaceId: String? = nil,
+    cbid: String? = nil,
+    audience: String? = nil,
+    audienceParams: [String: String] = [:]
+) -> String {
+    var parts: [String] = []
+    if let spaceId, !spaceId.isEmpty { parts.append("space_id=\(integrationEncode(spaceId))") }
+    for key in audienceParams.keys.sorted() {
+        if let value = audienceParams[key], !value.isEmpty {
+            parts.append("\(integrationEncode(key))=\(integrationEncode(value))")
+        }
+    }
+    if let cbid, !cbid.isEmpty { parts.append("cbid=\(integrationEncode(cbid))") }
+    if let audience, !audience.isEmpty { parts.append("audience=\(integrationEncode(audience))") }
+    return parts.isEmpty ? "" : "?" + parts.joined(separator: "&")
+}
+
 extension AtlasClient {
     /// `getToken({ for })` for the signed-in session
     /// (`POST /v1/client/sessions/:id/integration_tokens/:integration`): a
@@ -93,10 +113,22 @@ extension AtlasClient {
     /// - Parameters:
     ///   - integration: the integration id (a preset such as `chatly`, or a custom id).
     ///   - spaceId: Forumulate preset only: the space to mint the reader token for.
-    public func getToken(for integration: String, spaceId: String? = nil) async throws -> IntegrationToken? {
+    ///   - cbid: the per-call audience value for an integration whose `per_call_audience` is keyed on `cbid`.
+    ///   - audience: the full audience to request; it must match the integration's per-call audience template or allow-list.
+    ///   - audienceParams: extra named values for a per-call audience template (for example `["tenant": "t2"]`).
+    ///
+    /// An integration with a per-call audience mints a token only when the call
+    /// supplies a matching value; otherwise no token is minted.
+    public func getToken(
+        for integration: String,
+        spaceId: String? = nil,
+        cbid: String? = nil,
+        audience: String? = nil,
+        audienceParams: [String: String] = [:]
+    ) async throws -> IntegrationToken? {
         guard let stored = try tokenStore.load() else { throw AtlasError.notSignedIn }
         var path = "/v1/client/sessions/\(integrationEncode(stored.sessionId))/integration_tokens/\(integrationEncode(integration))"
-        if let spaceId, !spaceId.isEmpty { path += "?space_id=\(integrationEncode(spaceId))" }
+        path += integrationQuery(spaceId: spaceId, cbid: cbid, audience: audience, audienceParams: audienceParams)
         do {
             let (data, _) = try await authedSend("POST", path)
             return try decode(IntegrationToken.self, from: data)
@@ -119,11 +151,17 @@ extension AtlasClient {
     /// Returns `nil` when the integration is not enabled for Sign in with Atlas
     /// users (404). Other refusals — 401 for a token Atlas does not accept, 403
     /// `ORIGIN_NOT_ALLOWED` — throw ``AtlasError``.
+    ///
+    /// `cbid`, `audience` and `audienceParams` select the per-call audience, as on
+    /// ``getToken(for:spaceId:cbid:audience:audienceParams:)``.
     public func getAtlasIdToken(
         for integration: String,
         accessToken: String,
         origin: String? = nil,
-        dpopProof: String? = nil
+        dpopProof: String? = nil,
+        cbid: String? = nil,
+        audience: String? = nil,
+        audienceParams: [String: String] = [:]
     ) async throws -> AtlasIdIntegrationToken? {
         var headers: [String: String] = [:]
         if let dpopProof {
@@ -134,6 +172,7 @@ extension AtlasClient {
         }
         if let origin, !origin.isEmpty { headers["Origin"] = origin }
         let path = "/v1/client/integrations/\(integrationEncode(integration))/atlas_id_tokens?publishable_key=\(integrationEncode(publishableKey))"
+            + integrationQuery(cbid: cbid, audience: audience, audienceParams: audienceParams).replacingOccurrences(of: "?", with: "&")
         let (data, response) = try await sendJSON(
             "POST", path, json: nil, refreshCookie: nil, extraHeaders: headers
         )
