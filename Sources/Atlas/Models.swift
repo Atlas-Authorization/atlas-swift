@@ -137,9 +137,19 @@ public struct ExternalAccount: Decodable, Sendable, Equatable {
     }
 }
 
+/// The authenticator model behind a passkey, from the FIDO Metadata Service
+/// (present when the instance turns on `passkeyPolicy.mds`).
+public struct PasskeyAuthenticator: Decodable, Sendable, Equatable {
+    public let name: String?
+    /// A `data:image/…` URI.
+    public let icon: String?
+}
+
 public struct Passkey: Decodable, Sendable, Equatable {
     public let id: String
     public let name: String?
+    /// Name and icon of the authenticator model, when known.
+    public var authenticator: PasskeyAuthenticator? = nil
 }
 
 /// What the SDK persists after sign-in. The `token` (session JWT) goes in the

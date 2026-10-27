@@ -47,6 +47,12 @@ public final class AtlasClient: @unchecked Sendable {
     /// ``DeviceId``). Defaults to ``DeviceId/current(_:)``; return nil to send none.
     public var deviceIdProvider: @Sendable () -> String? = { DeviceId.current() }
 
+    /// App and device attestation (Apple App Attest). When set, sign-up, sign-in
+    /// and SMS-send requests fetch a single-use nonce, call this with it, and send
+    /// the proof as `Atlas-Attestation`. Needed once the instance turns on
+    /// `attackProtection.appAttestation`; see ``registerAppAttestKey(attest:)``.
+    public var attestationProvider: (@Sendable (_ nonce: String) async throws -> AtlasAttestationProof)?
+
     /// Opens the logout URL ``signOut(returnURL:followLogoutURL:)`` hands back —
     /// the upstream OIDC provider's end-session URL, or the SAML Single Logout
     /// start URL — so the user is signed out there too. Defaults to
@@ -319,6 +325,12 @@ public final class AtlasClient: @unchecked Sendable {
         }
         for (name, value) in extraHeaders {
             request.setValue(value, forHTTPHeaderField: name)
+        }
+        if let attestationProvider, AtlasAttestation.isGuarded(path: path, method: method),
+           let (challengeData, _) = try? await sendJSON("POST", "/v1/client/attestation/challenge", json: [:], refreshCookie: nil),
+           let nonce = (try? JSONSerialization.jsonObject(with: challengeData) as? [String: Any])?["nonce"] as? String {
+            let proof = try await attestationProvider(nonce)
+            request.setValue(AtlasAttestation.header(nonce: nonce, proof: proof), forHTTPHeaderField: "Atlas-Attestation")
         }
         if let json = DeviceId.stamp(json, path: path, method: method, id: deviceIdProvider) {
             request.setValue("application/json", forHTTPHeaderField: "content-type")

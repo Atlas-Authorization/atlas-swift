@@ -89,3 +89,21 @@ final class IdTokenTests: XCTestCase {
 
     static let userJSON = #"{"object":"user","id":"user_1","email_addresses":[],"external_accounts":[],"passkeys":[]}"#
 }
+
+final class GamePlatformBodyTests: XCTestCase {
+    func testGameCenterBodyEncodesBinaryFieldsAsBase64() {
+        let proof = GameCenterProof(playerId: "T:1", bundleId: "com.example.game", publicKeyURL: "https://static.gc.apple.com/k.cer",
+                                    signature: Data([1, 2, 3]), salt: Data([4, 5]), timestamp: 1_700_000_000_000)
+        let body = gameCenterSignInBody(proof)
+        XCTAssertEqual(body["provider"] as? String, "apple_game_center")
+        let gc = body["game_center"] as? [String: Any]
+        XCTAssertEqual(gc?["signature"] as? String, "AQID")
+        XCTAssertEqual(gc?["salt"] as? String, "BAU=")
+        XCTAssertEqual(gc?["player_id"] as? String, "T:1")
+        XCTAssertNil(gc?["display_name"])
+    }
+
+    func testPlayGamesBody() {
+        XCTAssertEqual(playGamesSignInBody(serverAuthCode: "4/x")["server_auth_code"] as? String, "4/x")
+    }
+}
