@@ -75,3 +75,11 @@ jobs:
         run: |
           UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'xrOS' in k or 'visionOS' in k for x in v if 'Vision' in x['name']))")
           xcodebuild test -scheme Atlas -destination "id=$UDID" CODE_SIGNING_ALLOWED=NO
+  vapor:
+    # AtlasVapor is its own package (Vapor and JWTKit stay out of the client package's dependencies).
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+        working-directory: AtlasVapor
