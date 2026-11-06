@@ -2,6 +2,13 @@
 
 All notable changes to the Atlas Swift SDK. The package is versioned by git tag.
 
+## 0.12.0 — 2026-11-06
+
+### Added
+
+- `DeviceKey`, `Attestation` and `GamePlatform` in the Atlas package.
+- `AtlasVapor`, session verification middleware for Vapor servers.
+
 ## 0.11.0 — 2026-10-25
 
 ### Added
