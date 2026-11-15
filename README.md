@@ -242,6 +242,44 @@ if error.isEmailDeliveryNotConfigured { showBanner(error.message) }
 // or: error.knownCode == .emailDeliveryNotConfigured
 ```
 
+## Organization switcher, billing, API keys and device approval
+
+Client calls (all on `AtlasClient`, all presenting the stored session):
+
+```swift
+// Organizations: list, create, switch (the new active org is in the session token)
+let orgs = try await client.organizations()
+try await client.setActiveOrganization(orgs[0].organization.id)   // nil = personal account
+let active = client.activeOrganizationId()
+
+// Billing: plans, subscription, hosted Checkout and Billing Portal
+let plans = try await client.billingPlans()
+let url = try await client.billingCheckout(planId: plans[0].id, successURL: back, cancelURL: back)
+let portal = try await client.billingPortal(returnURL: back)
+let sub = try await client.billingSubscription()          // orgId: for an organization's billing
+try await client.billingCancel(); try await client.billingRestore()
+
+// API keys: list, create (the secret is returned once), rename, revoke
+let created = try await client.createApiKey(name: "CI", expiresInSeconds: 86_400)
+print(created.secret)
+try await client.revokeApiKey(id: created.key.id)
+
+// Creating a key on a stale session throws STEP_UP_REQUIRED: re-authenticate, then retry
+try await client.stepUp(strategy: "password", password: password)
+```
+
+SwiftUI screens, themed from the instance's dashboard design exactly like `SignIn` (pass `appearance:` to override tokens in code):
+
+```swift
+OrganizationSwitcher(session: session)
+PricingTable(session: session, returnURL: back)            // plans, monthly/yearly, trial and promotion badges
+BillingOverview(session: session, returnURL: back)         // status, card, manage / cancel / resume, invoices
+ApiKeys(session: session)                                  // organizationId: for an organization's keys
+DeviceApproval(session: session, userCode: scannedCode)   // approve or deny the code a TV or CLI shows
+```
+
+Billing opens the provider's hosted pages through `openURL`; there is no in-app card form. The labels are the same English strings as the web components, so they localize through your app's string catalog.
+
 ## Tests
 
 ```bash
