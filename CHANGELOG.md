@@ -2,6 +2,16 @@
 
 All notable changes to the Atlas Swift SDK. The package is versioned by git tag.
 
+## 0.13.0 — 2026-11-14
+
+### Added
+
+- **Billing.** `billingPlans`, `billingSubscription`, `billingInvoices`, `billingPaymentMethod`, `billingCheckout`, `billingPortal`, `billingChangePlan`, `billingCancel`, `billingRestore`, `billingCheck` and `billingValidateCoupon`, with `BillingPlan.priceView` for promotions, trials and yearly prices.
+- **API keys.** `apiKeys`, `createApiKey`, `renameApiKey` and `revokeApiKey` for the user's keys or an organization's.
+- **Step-up and active organization.** `stepUp(strategy:password:code:)` and `activeOrganizationId()`.
+- **Step-up with a passkey or push.** `stepUpWithPasskey()` (system passkey sheet), `beginPushStepUp()` and `stepUpPush()`.
+- **SwiftUI screens.** `OrganizationSwitcher`, `PricingTable`, `BillingOverview`, `ApiKeys` and `DeviceApproval`, themed from the dashboard design like `SignIn`.
+
 ## 0.12.0 — 2026-11-06
 
 ### Added
