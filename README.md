@@ -1,7 +1,7 @@
 # Atlas Swift SDK
 
 The official native SDK for Apple platforms — iOS, iPadOS, macOS, visionOS,
-tvOS and watchOS — for the [Atlas](../../) auth platform: a
+tvOS and watchOS — for the [Atlas](https://atlasauth.net) auth platform: a
 dependency-light Swift Package that speaks the Atlas Frontend API (FAPI) with
 `URLSession` + `async/await` + `Codable`. It mirrors the vanilla JS client
 (`@atlas/js`) endpoint-for-endpoint and shape-for-shape.
@@ -20,10 +20,11 @@ dependency-light Swift Package that speaks the Atlas Frontend API (FAPI) with
 Swift Package Manager. In your `Package.swift`:
 
 ```swift
-.package(path: "../ssoly/sdks/swift") // or the published git URL
+.package(url: "https://github.com/Atlas-Authorization/atlas-swift", from: "0.4.0")
+// or a local checkout: .package(path: "../atlas-swift")
 ```
 
-or in Xcode: **File → Add Package Dependencies → Add Local**.
+or in Xcode: **File → Add Package Dependencies**, then enter the URL above (or **Add Local** for a checkout).
 
 No third-party dependencies. Requires iOS 13+/macOS 12+ (async/await).
 
